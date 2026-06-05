@@ -40,7 +40,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	box, err := resolveMailbox(cfg, *account, *folder)
+	// The CLI calls the same application service the MCP tools call —
+	// one use-case layer, two interfaces.
+	svc, err := buildService(cfg)
 	if err != nil && needsMailbox(cmd) {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -57,7 +59,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	switch cmd {
 	case "list":
-		ids, err := box.ListUnread()
+		ids, err := svc.ListUnread(*account, *folder)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -70,7 +72,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "usage: briefkasten read <id>")
 			return 2
 		}
-		raw, err := box.Fetch(id)
+		raw, err := svc.Read(*account, *folder, id)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -83,7 +85,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "usage: briefkasten seen <id>")
 			return 2
 		}
-		if err := box.MarkSeen(id); err != nil {
+		if err := svc.MarkSeen(*account, *folder, id); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -95,7 +97,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "usage: briefkasten search <query>")
 			return 2
 		}
-		ids, err := searchBox(box, query)
+		ids, err := svc.Search(*account, *folder, query)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -103,13 +105,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		emit(strings.Join(ids, "\n"), map[string]any{"ids": ids})
 
 	case "folders":
-		folders := []string{"INBOX"}
-		if fm, ok := box.(briefkasten.FolderMailbox); ok {
-			folders, err = fm.Folders()
-			if err != nil {
-				fmt.Fprintln(stderr, err)
-				return 1
-			}
+		folders, err := svc.Folders(*account)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
 		}
 		emit(strings.Join(folders, "\n"), map[string]any{"folders": folders})
 
@@ -147,20 +146,17 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "usage: briefkasten %s <id>\n", cmd)
 			return 2
 		}
-		cu, ok := box.(briefkasten.Curator)
-		if !ok {
-			fmt.Fprintln(stderr, "backend has no curation support")
-			return 1
-		}
+		// HITL stays at the interface; the shared use case runs after
+		// the human said yes — exactly like the MCP elicitation gate.
 		if !*yes && !confirmPrompt(stdin, stdout, cmd, id) {
 			emit("aborted", map[string]any{"ok": false, "aborted": true})
 			return 1
 		}
-		op := cu.Archive
+		op := svc.Archive
 		if cmd == "delete" {
-			op = cu.Delete
+			op = svc.Delete
 		}
-		if err := op(id); err != nil {
+		if err := op(*account, *folder, id); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -185,39 +181,6 @@ func confirmPrompt(stdin io.Reader, stdout io.Writer, action, id string) bool {
 	line, _ := bufio.NewReader(stdin).ReadString('\n')
 	answer := strings.ToLower(strings.TrimSpace(line))
 	return answer == "y" || answer == "yes"
-}
-
-func resolveMailbox(cfg *briefkasten.Config, account, folder string) (briefkasten.Mailbox, error) {
-	box, _, err := cfg.BuildMailbox()
-	if err != nil {
-		return nil, err
-	}
-	if account != "" {
-		accounts, err := cfg.BuildAccounts()
-		if err != nil {
-			return nil, err
-		}
-		named, ok := accounts[account]
-		if !ok {
-			return nil, fmt.Errorf("unknown account %q", account)
-		}
-		box = named
-	}
-	if folder != "" {
-		fm, ok := box.(briefkasten.FolderMailbox)
-		if !ok {
-			return nil, fmt.Errorf("backend has no folder support")
-		}
-		return fm.InFolder(folder)
-	}
-	return box, nil
-}
-
-func searchBox(box briefkasten.Mailbox, query string) ([]string, error) {
-	if s, ok := box.(briefkasten.Searcher); ok {
-		return s.Search(query)
-	}
-	return nil, fmt.Errorf("backend has no search support")
 }
 
 func loadConfigPath(explicit string) (*briefkasten.Config, error) {
@@ -256,4 +219,18 @@ func splitList(raw string) []string {
 		}
 	}
 	return out
+}
+
+// buildService composes the shared application service from the config —
+// the identical wiring NewConfigServer uses for the MCP surface.
+func buildService(cfg *briefkasten.Config) (*briefkasten.Service, error) {
+	box, _, err := cfg.BuildMailbox()
+	if err != nil {
+		return nil, err
+	}
+	accounts, err := cfg.BuildAccounts()
+	if err != nil {
+		return nil, err
+	}
+	return briefkasten.NewService(box, accounts), nil
 }
