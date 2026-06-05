@@ -17,6 +17,7 @@ func NewServer(mb Mailbox) *mcp.Server {
 	srv.Tool("email.list_unread").
 		Description("List ids of unread messages in the mailbox.").
 		ReadOnly().
+		UIResource(InboxUIResourceURI).
 		OutputSchema(map[string]any{"ids": []string{"m1.eml"}}).
 		Handler(func(_ context.Context, _ struct{}) (map[string]any, error) {
 			ids, err := mb.ListUnread()

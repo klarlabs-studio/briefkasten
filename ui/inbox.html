@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Briefkasten</title>
+<style>
+  :root {
+    --paper: #f4f1e8;
+    --card: #faf8f2;
+    --ink: #1a1815;
+    --ink-soft: #6e695f;
+    --rule: #c8c3b9;
+    --green: #175a39;
+    --red: #a23129;
+    --amber: #9a7416;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font: 14px/1.5 "Helvetica Neue", Arial, sans-serif;
+    padding: 1.2rem;
+  }
+  h1 {
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 1.7rem;
+    font-weight: 500;
+  }
+  .sub { color: var(--ink-soft); font-size: 0.8rem; margin-bottom: 1rem; }
+  .bar { display: flex; gap: 0.5rem; margin-bottom: 0.8rem; }
+  button {
+    font: inherit; font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase;
+    background: none; border: 1px solid var(--ink); color: var(--ink);
+    padding: 0.35rem 0.8rem; cursor: pointer;
+  }
+  button:hover { background: var(--ink); color: var(--paper); }
+  button.primary { background: var(--green); border-color: var(--green); color: #fff; }
+  button.primary:hover { opacity: 0.9; }
+  .msg {
+    background: var(--card); border: 1px solid var(--rule);
+    border-left: 3px solid var(--green);
+    padding: 0.7rem 0.9rem; margin-bottom: 0.6rem;
+  }
+  .msg header { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
+  .msg .from { color: var(--ink-soft); font-size: 0.78rem; }
+  .msg .subject { font-weight: 600; }
+  .msg pre {
+    font: 0.78rem/1.5 ui-monospace, Menlo, monospace;
+    white-space: pre-wrap; color: var(--ink-soft);
+    border-top: 1px dashed var(--rule); margin-top: 0.5rem; padding-top: 0.5rem;
+    max-height: 9rem; overflow: auto;
+  }
+  .empty, .error { padding: 1rem 0; color: var(--ink-soft); }
+  .error { color: var(--red); }
+  form.compose {
+    background: var(--card); border: 1px solid var(--rule);
+    padding: 0.9rem; margin-top: 1rem; display: grid; gap: 0.5rem;
+  }
+  form.compose input, form.compose textarea {
+    font: inherit; padding: 0.4rem 0.5rem;
+    border: none; border-bottom: 1px solid var(--rule); background: transparent;
+  }
+  form.compose textarea { min-height: 5rem; }
+  .status { font-size: 0.78rem; color: var(--green); }
+  .rule { border-top: 2px solid var(--ink); margin: 1.2rem 0 0.8rem; }
+</style>
+</head>
+<body>
+  <h1>Briefkasten<span style="color:var(--green)">.</span></h1>
+  <p class="sub">Mailbox over MCP — unread messages, acknowledged only after you mark them.</p>
+
+  <div class="bar">
+    <button id="refresh">Refresh</button>
+    <span class="status" id="status"></span>
+  </div>
+  <div id="list"></div>
+
+  <div class="rule"></div>
+  <form class="compose" id="compose">
+    <strong style="font-family:Georgia,serif">Compose</strong>
+    <input id="to" placeholder="To (comma-separated)" required />
+    <input id="subject" placeholder="Subject" required />
+    <textarea id="body" placeholder="Body" required></textarea>
+    <div class="bar">
+      <button type="submit" class="primary">Queue send</button>
+      <span class="status" id="sendStatus"></span>
+    </div>
+  </form>
+
+<script>
+// Minimal MCP Apps bridge: JSON-RPC 2.0 over postMessage to the host.
+let seq = 0;
+const pending = new Map();
+window.addEventListener('message', (ev) => {
+  const m = ev.data;
+  if (m && m.jsonrpc === '2.0' && pending.has(m.id)) {
+    const { resolve, reject } = pending.get(m.id);
+    pending.delete(m.id);
+    if (m.error) reject(new Error(m.error.message || 'tool error'));
+    else resolve(m.result);
+  }
+});
+
+function callTool(name, args) {
+  return new Promise((resolve, reject) => {
+    const id = 'ui-' + ++seq;
+    pending.set(id, { resolve, reject });
+    window.parent.postMessage(
+      { jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args || {} } },
+      '*',
+    );
+    setTimeout(() => {
+      if (pending.has(id)) {
+        pending.delete(id);
+        reject(new Error('host bridge unavailable'));
+      }
+    }, 8000);
+  });
+}
+
+function toolJSON(result) {
+  // Tool results arrive as content blocks; the payload is JSON text.
+  const block = (result && result.content && result.content[0]) || {};
+  if (typeof block.text === 'string') {
+    try { return JSON.parse(block.text); } catch { return block.text; }
+  }
+  return block.text ?? block;
+}
+
+function header(raw, name) {
+  const m = raw.match(new RegExp('^' + name + ':\\s*(.+)$', 'mi'));
+  return m ? m[1].trim() : '';
+}
+
+async function refresh() {
+  const list = document.getElementById('list');
+  const status = document.getElementById('status');
+  status.textContent = 'loading…';
+  list.innerHTML = '';
+  try {
+    const { ids } = toolJSON(await callTool('email.list_unread'));
+    status.textContent = ids.length + ' unread';
+    if (!ids.length) {
+      list.innerHTML = '<p class="empty">Inbox clear — nothing unread.</p>';
+      return;
+    }
+    for (const id of ids.slice(0, 10)) {
+      const { raw: b64 } = toolJSON(await callTool('email.fetch', { id }));
+      const raw = atob(b64);
+      const el = document.createElement('article');
+      el.className = 'msg';
+      el.innerHTML =
+        '<header><div><div class="subject"></div><div class="from"></div></div>' +
+        '<button>Mark seen</button></header><pre></pre>';
+      el.querySelector('.subject').textContent = header(raw, 'Subject') || '(no subject)';
+      el.querySelector('.from').textContent = header(raw, 'From') + ' · ' + id;
+      el.querySelector('pre').textContent = raw.split(/\r?\n\r?\n/).slice(1).join('\n\n').trim();
+      el.querySelector('button').onclick = async () => {
+        await callTool('email.mark_seen', { id });
+        refresh();
+      };
+      list.appendChild(el);
+    }
+  } catch (e) {
+    status.textContent = '';
+    list.innerHTML = '<p class="error">' + e.message + '</p>';
+  }
+}
+
+document.getElementById('refresh').onclick = refresh;
+document.getElementById('compose').onsubmit = async (ev) => {
+  ev.preventDefault();
+  const sendStatus = document.getElementById('sendStatus');
+  sendStatus.textContent = 'queuing…';
+  try {
+    const res = toolJSON(await callTool('email.send', {
+      to: document.getElementById('to').value.split(',').map((s) => s.trim()).filter(Boolean),
+      subject: document.getElementById('subject').value,
+      body: document.getElementById('body').value,
+    }));
+    sendStatus.textContent = 'queued: ' + res.id;
+    ev.target.reset();
+  } catch (e) {
+    sendStatus.textContent = e.message;
+  }
+};
+
+refresh();
+</script>
+</body>
+</html>

@@ -65,6 +65,7 @@ func NewConfigServer(cfg *Config) (*mcp.Server, *Outbox, error) {
 	}
 	RegisterResources(srv, sw, ob)
 	RegisterPrompts(srv, sw)
+	RegisterUI(srv)
 	return srv, ob, nil
 }
 

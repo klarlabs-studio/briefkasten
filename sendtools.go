@@ -28,6 +28,7 @@ func registerSendTools(srv *mcp.Server, ob *Outbox) {
 	srv.Tool("email.send_status").
 		Description("Report the lifecycle state of a queued email: queued, sending, sent, or failed (with error).").
 		ReadOnly().
+		UIResource(InboxUIResourceURI).
 		OutputSchema(map[string]any{"id": "abc123", "state": "sent", "attempts": 1}).
 		Handler(func(_ context.Context, in struct {
 			ID string `json:"id"`
