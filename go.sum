@@ -14,6 +14,8 @@ github.com/felixgeelhaar/fortify v1.5.1 h1:sqwkeE5EtGheCW3/J4asGy2VJpdppakuSZOh8
 github.com/felixgeelhaar/fortify v1.5.1/go.mod h1:a5JIEmZ+G6iq8a+CkfADD7+eRU1gD4b7g85WkesCeVk=
 github.com/felixgeelhaar/mcp-go v1.14.0 h1:O7JFs6SRmr6+qrv1ReRUJHtKkaOE+bpiKuMF9C0llVk=
 github.com/felixgeelhaar/mcp-go v1.14.0/go.mod h1:xKHP8bCpHKA1v3tTYeCp0IKJ1rCzqhujvW72GN65TbY=
+github.com/felixgeelhaar/statekit v1.7.0 h1:uZBcB32EvrMu/+4JDcXyRxUJWkfQW09v0CPOvu+m+C4=
+github.com/felixgeelhaar/statekit v1.7.0/go.mod h1:/U7XpqKU8JjdhFGI6l6VDaSI+SPXhwdwGhUy81B4P6k=
 github.com/go-logr/logr v1.2.2/go.mod h1:jdQByPbusPIv2/zmleS9BjJVeZ6kBagPoEUsqbVz/1A=
 github.com/go-logr/logr v1.4.3 h1:CjnDlHq8ikf6E492q6eKboGOC0T8CDaOvkHCIg8idEI=
 github.com/go-logr/logr v1.4.3/go.mod h1:9T104GzyrTigFIr8wt5mBrctHMim0Nb2HLGrmQ40KvY=
