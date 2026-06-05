@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/felixgeelhaar/bolt"
 	mcp "github.com/felixgeelhaar/mcp-go"
@@ -42,7 +43,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	srv, err := briefkasten.NewConfigServer(cfg)
+	srv, outbox, err := briefkasten.NewConfigServer(cfg)
 	if err != nil {
 		log.Error().Err(err).Msg("mailbox init failed")
 		os.Exit(1)
@@ -51,11 +52,32 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Outbox worker: deliver the queued backlog continuously.
+	if outbox != nil {
+		go func() {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if n, err := outbox.ProcessOnce(ctx); err != nil {
+						log.Error().Err(err).Msg("outbox process failed")
+					} else if n > 0 {
+						log.Info().Int("delivered", n).Msg("outbox delivered")
+					}
+				}
+			}
+		}()
+	}
+
 	log.Info().
 		Str("addr", cfg.Addr).
 		Str("backend", cfg.ResolvedBackend()).
 		Str("config_file", cfg.Path()).
 		Bool("runtime_config", cfg.RuntimeConfig).
+		Bool("outbox", outbox != nil).
 		Msg("briefkasten listening")
 	if err := mcp.ServeHTTP(ctx, srv, cfg.Addr); err != nil && ctx.Err() == nil {
 		log.Error().Err(err).Msg("serve failed")

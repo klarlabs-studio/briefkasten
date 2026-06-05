@@ -11,7 +11,7 @@ import (
 // the connector contract: any client that speaks them can consume any
 // backend.
 func NewServer(mb Mailbox) *mcp.Server {
-	srv := mcp.NewServer(mcp.ServerInfo{Name: "briefkasten", Version: "0.3.0"})
+	srv := mcp.NewServer(mcp.ServerInfo{Name: "briefkasten", Version: "0.4.0"})
 
 	srv.Tool("email.list_unread").
 		Description("List ids of unread messages in the mailbox.").

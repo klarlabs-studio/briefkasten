@@ -12,6 +12,10 @@ contract instead of binding to IMAP libraries:
 | `email.list_unread` | `{}` → `{"ids": ["..."]}` |
 | `email.fetch` | `{"id": "..."}` → `{"raw": "<base64 RFC 5322>"}` |
 | `email.mark_seen` | `{"id": "..."}` → `{"ok": true}` — message won't be listed again |
+| `email.send`* | `{"to": [...], "subject", "body"}` → `{"id", "state": "queued"}` |
+| `email.send_status`* | `{"id"}` → `{"state": "queued\|sending\|sent\|failed", "attempts", "error?"}` |
+
+\* Sending registers only when an outbox is configured.
 
 Built on [mcp-go](https://github.com/felixgeelhaar/mcp-go).
 
@@ -43,6 +47,28 @@ runtime_config: false    # enable config.get / config.set MCP tools
 Every key has an env override: `BRIEFKASTEN_ADDR`, `BRIEFKASTEN_BACKEND`,
 `BRIEFKASTEN_MAILDIR`, `BRIEFKASTEN_IMAP_ADDR` / `_USER` / `_PASSWORD` /
 `_MAILBOX` / `_INSECURE`, `BRIEFKASTEN_RUNTIME_CONFIG`.
+
+### Sending
+
+```yaml
+outbox:
+  dir: ./outbox             # lifecycle state lives here; enables email.send
+  from: nexa@local.example
+  deliver_dir: ./delivery   # DirSender: .eml into delivery/new (local loop)
+  smtp:                     # set addr to deliver over SMTP instead
+    addr: smtp.example.org:587
+    username: alice
+    password: "..."
+```
+
+Each message is a statechart: `queued → sending → sent | failed`, with
+`failed → queued` on retry — modeled with
+[statekit](https://github.com/felixgeelhaar/statekit), persisted as files
+under `outbox/<state>/`, so a restart resumes where it stopped. The worker
+delivers asynchronously; `email.send` returns immediately with the outbox
+id. SMTP delivery is fortify-wrapped (timeout, exponential-backoff retry).
+Env overrides: `BRIEFKASTEN_OUTBOX_DIR` / `_FROM` / `_DELIVER_DIR`,
+`BRIEFKASTEN_SMTP_ADDR` / `_USER` / `_PASSWORD` / `_INSECURE`.
 
 ### Runtime reconfiguration over MCP
 

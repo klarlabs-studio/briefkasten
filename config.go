@@ -20,6 +20,9 @@ type Config struct {
 	Maildir string `yaml:"maildir"`
 	// IMAP configures the IMAP backend.
 	IMAP IMAPSettings `yaml:"imap"`
+	// Outbox configures outbound mail; the email.send tools register only
+	// when Outbox.Dir is set.
+	Outbox OutboxSettings `yaml:"outbox"`
 	// RuntimeConfig enables the config.get / config.set MCP tools that
 	// reconfigure the backend at runtime. Off by default: config.set
 	// accepts mailbox credentials, so only enable it on trusted networks.
@@ -37,6 +40,28 @@ type IMAPSettings struct {
 	Password string `yaml:"password"`
 	Mailbox  string `yaml:"mailbox"`
 	Insecure bool   `yaml:"insecure"`
+}
+
+// OutboxSettings configures outbound mail.
+type OutboxSettings struct {
+	// Dir is the outbox state root (out/<state>/). Empty disables sending.
+	Dir string `yaml:"dir"`
+	// From is the sender address. Required when Dir is set.
+	From string `yaml:"from"`
+	// DeliverDir selects the DirSender: messages land as .eml in
+	// <deliver_dir>/new. Used when SMTP.Addr is empty.
+	DeliverDir string `yaml:"deliver_dir"`
+	// SMTP selects the SMTPSender when Addr is set.
+	SMTP SMTPSettings `yaml:"smtp"`
+}
+
+// SMTPSettings is the serializable subset of SMTPConfig.
+type SMTPSettings struct {
+	Addr        string `yaml:"addr"`
+	Username    string `yaml:"username"`
+	Password    string `yaml:"password"`
+	ImplicitTLS bool   `yaml:"implicit_tls"`
+	Insecure    bool   `yaml:"insecure"`
 }
 
 // LoadConfig returns the default configuration overlaid with the YAML file
@@ -94,6 +119,15 @@ func (c *Config) ApplyEnv() {
 	if v := os.Getenv("BRIEFKASTEN_IMAP_INSECURE"); v != "" {
 		c.IMAP.Insecure = v == "1" || v == "true"
 	}
+	overlay(&c.Outbox.Dir, "BRIEFKASTEN_OUTBOX_DIR")
+	overlay(&c.Outbox.From, "BRIEFKASTEN_OUTBOX_FROM")
+	overlay(&c.Outbox.DeliverDir, "BRIEFKASTEN_OUTBOX_DELIVER_DIR")
+	overlay(&c.Outbox.SMTP.Addr, "BRIEFKASTEN_SMTP_ADDR")
+	overlay(&c.Outbox.SMTP.Username, "BRIEFKASTEN_SMTP_USER")
+	overlay(&c.Outbox.SMTP.Password, "BRIEFKASTEN_SMTP_PASSWORD")
+	if v := os.Getenv("BRIEFKASTEN_SMTP_INSECURE"); v != "" {
+		c.Outbox.SMTP.Insecure = v == "1" || v == "true"
+	}
 	if v := os.Getenv("BRIEFKASTEN_RUNTIME_CONFIG"); v != "" {
 		c.RuntimeConfig = v == "1" || v == "true"
 	}
@@ -143,4 +177,40 @@ func (c *Config) BuildMailbox() (Mailbox, string, error) {
 	default:
 		return nil, "", fmt.Errorf("config: unknown backend %q (want maildir or imap)", backend)
 	}
+}
+
+// BuildOutbox constructs the configured outbox with its sender, or
+// (nil, "", nil) when sending is not configured. SMTP wins over the dir
+// sender when both are set.
+func (c *Config) BuildOutbox() (*Outbox, string, error) {
+	if c.Outbox.Dir == "" {
+		return nil, "", nil
+	}
+	var (
+		sender Sender
+		desc   string
+		err    error
+	)
+	if c.Outbox.SMTP.Addr != "" {
+		sender, err = NewSMTPSender(SMTPConfig{
+			Addr:        c.Outbox.SMTP.Addr,
+			From:        c.Outbox.From,
+			Username:    c.Outbox.SMTP.Username,
+			Password:    c.Outbox.SMTP.Password,
+			ImplicitTLS: c.Outbox.SMTP.ImplicitTLS,
+			Insecure:    c.Outbox.SMTP.Insecure,
+		})
+		desc = "smtp " + c.Outbox.SMTP.Addr
+	} else {
+		sender, err = NewDirSender(c.Outbox.DeliverDir, c.Outbox.From)
+		desc = "dir " + c.Outbox.DeliverDir
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	ob, err := NewOutbox(c.Outbox.Dir, sender)
+	if err != nil {
+		return nil, "", err
+	}
+	return ob, desc, nil
 }

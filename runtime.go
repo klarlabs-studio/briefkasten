@@ -43,18 +43,27 @@ var _ Mailbox = (*Switchable)(nil)
 
 // NewConfigServer builds the configured backend and serves it behind a
 // Switchable. When cfg.RuntimeConfig is enabled, config.get and config.set
-// tools allow inspecting and reconfiguring the backend at runtime.
-func NewConfigServer(cfg *Config) (*mcp.Server, error) {
+// tools allow inspecting and reconfiguring the backend at runtime. When the
+// outbox is configured, email.send / email.send_status register and the
+// returned Outbox is non-nil — the caller runs its delivery worker.
+func NewConfigServer(cfg *Config) (*mcp.Server, *Outbox, error) {
 	mb, _, err := cfg.BuildMailbox()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sw := NewSwitchable(mb)
 	srv := NewServer(sw)
 	if cfg.RuntimeConfig {
 		registerConfigTools(srv, cfg, sw)
 	}
-	return srv, nil
+	ob, _, err := cfg.BuildOutbox()
+	if err != nil {
+		return nil, nil, err
+	}
+	if ob != nil {
+		registerSendTools(srv, ob)
+	}
+	return srv, ob, nil
 }
 
 // imapPatch carries a partial IMAP settings update; nil/empty fields keep

@@ -30,7 +30,7 @@ func TestSwitchableSwap(t *testing.T) {
 
 func newConfigServer(t *testing.T, cfg *Config) *testutil.TestClient {
 	t.Helper()
-	srv, err := NewConfigServer(cfg)
+	srv, _, err := NewConfigServer(cfg)
 	if err != nil {
 		t.Fatalf("NewConfigServer: %v", err)
 	}
