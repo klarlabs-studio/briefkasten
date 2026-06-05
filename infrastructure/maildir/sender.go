@@ -1,13 +1,13 @@
 package maildir
 
 import (
-	"github.com/felixgeelhaar/briefkasten/domain"
-
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/felixgeelhaar/briefkasten/domain"
 )
 
 // Sender delivers messages as .eml files into a maildir-style new/

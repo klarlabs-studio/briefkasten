@@ -33,10 +33,13 @@ func (s *Switchable) current() domain.Mailbox {
 	return s.mb
 }
 
+// ListUnread lists the current backend's unread ids.
 func (s *Switchable) ListUnread() ([]string, error) { return s.current().ListUnread() }
 
+// Fetch returns the raw message bytes from the current backend.
 func (s *Switchable) Fetch(id string) ([]byte, error) { return s.current().Fetch(id) }
 
+// MarkSeen acknowledges a message on the current backend.
 func (s *Switchable) MarkSeen(id string) error { return s.current().MarkSeen(id) }
 
 // Search forwards to the backend's Searcher or the generic fallback.

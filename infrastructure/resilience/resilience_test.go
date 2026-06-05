@@ -1,13 +1,13 @@
 package resilience
 
 import (
-	"github.com/felixgeelhaar/briefkasten/domain"
-
 	"errors"
 	"fmt"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/felixgeelhaar/briefkasten/domain"
 
 	"github.com/felixgeelhaar/fortify/ferrors"
 )

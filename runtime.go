@@ -81,7 +81,8 @@ func registerConfigTools(srv *mcp.Server, cfg *Config, sw *Switchable) {
 			Backend string     `json:"backend,omitempty"`
 			Maildir string     `json:"maildir,omitempty"`
 			IMAP    *imapPatch `json:"imap,omitempty"`
-		}) (map[string]any, error) {
+		},
+		) (map[string]any, error) {
 			mu.Lock()
 			defer mu.Unlock()
 

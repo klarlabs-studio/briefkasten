@@ -2,14 +2,14 @@
 package imap
 
 import (
-	"github.com/felixgeelhaar/briefkasten/domain"
-	"github.com/felixgeelhaar/briefkasten/infrastructure/auth"
-
 	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
 	"strconv"
+
+	"github.com/felixgeelhaar/briefkasten/domain"
+	"github.com/felixgeelhaar/briefkasten/infrastructure/auth"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
@@ -72,12 +72,12 @@ func (m *Mailbox) dial() (*imapclient.Client, error) {
 	}
 	if m.cfg.OAuth2 != nil {
 		host, port := auth.SplitHostPort(m.cfg.Addr, 993)
-		auth, err := m.cfg.OAuth2.SASLClient(context.Background(), m.cfg.Username, host, port)
+		saslAuth, err := m.cfg.OAuth2.SASLClient(context.Background(), m.cfg.Username, host, port)
 		if err != nil {
 			_ = c.Close()
 			return nil, err
 		}
-		if err := c.Authenticate(auth); err != nil {
+		if err := c.Authenticate(saslAuth); err != nil {
 			_ = c.Close()
 			return nil, fmt.Errorf("imap: authenticate: %w", err)
 		}

@@ -1,16 +1,16 @@
 package application_test
 
 import (
-	"github.com/felixgeelhaar/briefkasten/application"
-	"github.com/felixgeelhaar/briefkasten/domain"
-	"github.com/felixgeelhaar/briefkasten/infrastructure/maildir"
-
 	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/felixgeelhaar/briefkasten/application"
+	"github.com/felixgeelhaar/briefkasten/domain"
+	"github.com/felixgeelhaar/briefkasten/infrastructure/maildir"
 )
 
 // fakeSender records deliveries and fails on demand.

@@ -3,14 +3,14 @@
 package maildir
 
 import (
-	"github.com/felixgeelhaar/briefkasten/domain"
-
 	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/felixgeelhaar/briefkasten/domain"
 )
 
 // Mailbox is the local-first backend: a maildir-style directory where

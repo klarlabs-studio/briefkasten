@@ -3,13 +3,12 @@ package resilience
 
 import (
 	"bytes"
-	"strings"
-
-	"github.com/felixgeelhaar/briefkasten/domain"
-
 	"context"
 	"errors"
+	"strings"
 	"time"
+
+	"github.com/felixgeelhaar/briefkasten/domain"
 
 	"github.com/felixgeelhaar/fortify/circuitbreaker"
 	"github.com/felixgeelhaar/fortify/retry"
@@ -42,7 +41,7 @@ type Mailbox struct {
 	op time.Duration
 }
 
-// Resilient wraps mb with timeout, retry, and circuit breaker.
+// Wrap decorates mb with timeout, retry, and circuit breaker.
 func Wrap(mb domain.Mailbox, cfg Config) *Mailbox {
 	if cfg.OpTimeout <= 0 {
 		cfg.OpTimeout = 30 * time.Second
@@ -79,6 +78,7 @@ func (r *Mailbox) execute(fn func() (any, error)) (any, error) {
 	})
 }
 
+// ListUnread lists unread ids through the resilience pipeline.
 func (r *Mailbox) ListUnread() ([]string, error) {
 	v, err := r.execute(func() (any, error) { return r.mb.ListUnread() })
 	if err != nil {
@@ -87,6 +87,7 @@ func (r *Mailbox) ListUnread() ([]string, error) {
 	return v.([]string), nil
 }
 
+// Fetch returns raw message bytes through the resilience pipeline.
 func (r *Mailbox) Fetch(id string) ([]byte, error) {
 	v, err := r.execute(func() (any, error) { return r.mb.Fetch(id) })
 	if err != nil {
@@ -95,6 +96,7 @@ func (r *Mailbox) Fetch(id string) ([]byte, error) {
 	return v.([]byte), nil
 }
 
+// MarkSeen acknowledges a message through the resilience pipeline.
 func (r *Mailbox) MarkSeen(id string) error {
 	_, err := r.execute(func() (any, error) { return nil, r.mb.MarkSeen(id) })
 	return err

@@ -24,7 +24,9 @@ import (
 	"github.com/felixgeelhaar/briefkasten/infrastructure/smtp"
 )
 
-// Domain ports and types, re-exported for consumers.
+// Mailbox and friends are the domain ports, re-exported for consumers.
+//
+//nolint:revive // grouped aliases share one doc comment by design
 type (
 	Mailbox         = domain.Mailbox
 	Searcher        = domain.Searcher
@@ -56,7 +58,9 @@ func NewService(mb Mailbox, accounts map[string]Mailbox) *Service {
 // NewSwitchable wraps an initial backend for runtime swapping.
 func NewSwitchable(mb Mailbox) *Switchable { return application.NewSwitchable(mb) }
 
-// Backends.
+// DirMailbox and IMAPMailbox are the built-in backends.
+//
+//nolint:revive // grouped aliases share one doc comment by design
 type (
 	DirMailbox  = maildir.Mailbox
 	IMAPMailbox = imap.Mailbox
@@ -72,7 +76,9 @@ func NewIMAPMailbox(cfg IMAPConfig) (*IMAPMailbox, error) { return imap.New(cfg)
 // NewDirSender delivers messages as .eml files into a maildir new/.
 func NewDirSender(root, from string) (*maildir.Sender, error) { return maildir.NewSender(root, from) }
 
-// Outbound transport.
+// SMTPSender is the outbound SMTP transport.
+//
+//nolint:revive // grouped aliases share one doc comment by design
 type (
 	SMTPSender = smtp.Sender
 	SMTPConfig = smtp.Config
@@ -84,7 +90,9 @@ func NewSMTPSender(cfg SMTPConfig) (*SMTPSender, error) { return smtp.NewSender(
 // OAuth2Settings configures token-based IMAP/SMTP authentication.
 type OAuth2Settings = auth.OAuth2Settings
 
-// Resilience decorator.
+// ResilientMailbox decorates remote backends with fortify patterns.
+//
+//nolint:revive // grouped aliases share one doc comment by design
 type (
 	ResilientMailbox = resilience.Mailbox
 	ResilienceConfig = resilience.Config

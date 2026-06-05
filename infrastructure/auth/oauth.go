@@ -39,7 +39,7 @@ type OAuth2Settings struct {
 	source oauth2.TokenSource
 }
 
-// token returns a current access token, refreshing as needed.
+// Token returns a current access token, refreshing as needed.
 func (o *OAuth2Settings) Token(ctx context.Context) (string, error) {
 	if o.AccessToken != "" && o.RefreshToken == "" {
 		return o.AccessToken, nil
@@ -62,7 +62,7 @@ func (o *OAuth2Settings) Token(ctx context.Context) (string, error) {
 	return tok.AccessToken, nil
 }
 
-// saslClient builds the SASL client for the configured mechanism.
+// SASLClient builds the SASL client for the configured mechanism.
 func (o *OAuth2Settings) SASLClient(ctx context.Context, username, host string, port int) (sasl.Client, error) {
 	tok, err := o.Token(ctx)
 	if err != nil {
@@ -83,7 +83,7 @@ func (o *OAuth2Settings) SASLClient(ctx context.Context, username, host string, 
 	}
 }
 
-// splitHostPort splits addr into host and port, with a default port.
+// SplitHostPort splits addr into host and port, with a default port.
 func SplitHostPort(addr string, defaultPort int) (string, int) {
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -106,15 +106,18 @@ type xoauth2Client struct {
 	failed   bool
 }
 
+// NewXOAuth2Client builds an XOAUTH2 SASL client for the user and token.
 func NewXOAuth2Client(username, token string) sasl.Client {
 	return &xoauth2Client{username: username, token: token}
 }
 
+// Start begins the exchange with the single XOAUTH2 initial response.
 func (c *xoauth2Client) Start() (string, []byte, error) {
 	ir := fmt.Sprintf("user=%s\x01auth=Bearer %s\x01\x01", c.username, c.token)
 	return "XOAUTH2", []byte(ir), nil
 }
 
+// Next answers an error challenge with an empty response, then fails.
 func (c *xoauth2Client) Next(challenge []byte) ([]byte, error) {
 	if c.failed {
 		return nil, errors.New("xoauth2: authentication failed: " + string(challenge))

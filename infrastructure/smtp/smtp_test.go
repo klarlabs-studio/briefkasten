@@ -1,14 +1,14 @@
 package smtp
 
 import (
-	"github.com/felixgeelhaar/briefkasten/domain"
-
 	"context"
 	"io"
 	"net"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/felixgeelhaar/briefkasten/domain"
 
 	"github.com/emersion/go-smtp"
 )

@@ -78,7 +78,8 @@ func registerTools(srv *mcp.Server, svc *application.Service) {
 		Handler(func(_ context.Context, in struct {
 			Folder  string `json:"folder,omitempty"`
 			Account string `json:"account,omitempty"`
-		}) (map[string]any, error) {
+		},
+		) (map[string]any, error) {
 			ids, err := svc.ListUnread(in.Account, in.Folder)
 			if err != nil {
 				return nil, err
@@ -94,7 +95,8 @@ func registerTools(srv *mcp.Server, svc *application.Service) {
 			ID      string `json:"id"`
 			Folder  string `json:"folder,omitempty"`
 			Account string `json:"account,omitempty"`
-		}) (map[string]any, error) {
+		},
+		) (map[string]any, error) {
 			raw, err := svc.Read(in.Account, in.Folder, in.ID)
 			if err != nil {
 				return nil, err
@@ -110,7 +112,8 @@ func registerTools(srv *mcp.Server, svc *application.Service) {
 			ID      string `json:"id"`
 			Folder  string `json:"folder,omitempty"`
 			Account string `json:"account,omitempty"`
-		}) (map[string]any, error) {
+		},
+		) (map[string]any, error) {
 			if err := svc.MarkSeen(in.Account, in.Folder, in.ID); err != nil {
 				return nil, err
 			}
@@ -125,7 +128,8 @@ func registerTools(srv *mcp.Server, svc *application.Service) {
 			Query   string `json:"query"`
 			Folder  string `json:"folder,omitempty"`
 			Account string `json:"account,omitempty"`
-		}) (map[string]any, error) {
+		},
+		) (map[string]any, error) {
 			ids, err := svc.Search(in.Account, in.Folder, in.Query)
 			if err != nil {
 				return nil, err
@@ -205,7 +209,8 @@ func registerSendTools(srv *mcp.Server, ob *application.Outbox) {
 			To      []string `json:"to"`
 			Subject string   `json:"subject"`
 			Body    string   `json:"body"`
-		}) (map[string]any, error) {
+		},
+		) (map[string]any, error) {
 			id, err := ob.Enqueue(domain.OutboundMessage{To: in.To, Subject: in.Subject, Body: in.Body})
 			if err != nil {
 				return nil, err
@@ -220,7 +225,8 @@ func registerSendTools(srv *mcp.Server, ob *application.Outbox) {
 		OutputSchema(map[string]any{"id": "abc123", "state": "sent", "attempts": 1}).
 		Handler(func(_ context.Context, in struct {
 			ID string `json:"id"`
-		}) (map[string]any, error) {
+		},
+		) (map[string]any, error) {
 			msg, err := ob.Status(in.ID)
 			if err != nil {
 				return nil, err

@@ -2,15 +2,15 @@
 package smtp
 
 import (
-	"github.com/felixgeelhaar/briefkasten/domain"
-	"github.com/felixgeelhaar/briefkasten/infrastructure/auth"
-
 	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/felixgeelhaar/briefkasten/domain"
+	"github.com/felixgeelhaar/briefkasten/infrastructure/auth"
 
 	"github.com/emersion/go-sasl"
 	"github.com/emersion/go-smtp"
@@ -83,20 +83,20 @@ func (s *Sender) deliver(msg domain.OutboundMessage) error {
 	if err != nil {
 		return fmt.Errorf("smtp dial %s: %w", s.cfg.Addr, err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if s.cfg.OAuth2 != nil {
 		host, port := auth.SplitHostPort(s.cfg.Addr, 587)
-		auth, err := s.cfg.OAuth2.SASLClient(context.Background(), s.cfg.Username, host, port)
+		saslAuth, err := s.cfg.OAuth2.SASLClient(context.Background(), s.cfg.Username, host, port)
 		if err != nil {
 			return err
 		}
-		if err := c.Auth(auth); err != nil {
+		if err := c.Auth(saslAuth); err != nil {
 			return fmt.Errorf("smtp auth: %w", err)
 		}
 	} else if s.cfg.Username != "" {
-		auth := sasl.NewPlainClient("", s.cfg.Username, s.cfg.Password)
-		if err := c.Auth(auth); err != nil {
+		plainAuth := sasl.NewPlainClient("", s.cfg.Username, s.cfg.Password)
+		if err := c.Auth(plainAuth); err != nil {
 			return fmt.Errorf("smtp auth: %w", err)
 		}
 	}
