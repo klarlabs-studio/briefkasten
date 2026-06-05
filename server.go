@@ -11,10 +11,13 @@ import (
 // the connector contract: any client that speaks them can consume any
 // backend.
 func NewServer(mb Mailbox) *mcp.Server {
-	srv := mcp.NewServer(mcp.ServerInfo{Name: "briefkasten", Version: "0.4.0"})
+	srv := mcp.NewServer(mcp.ServerInfo{Name: "briefkasten", Version: "0.4.0"},
+		mcp.WithInstructions(Instructions))
 
 	srv.Tool("email.list_unread").
 		Description("List ids of unread messages in the mailbox.").
+		ReadOnly().
+		OutputSchema(map[string]any{"ids": []string{"m1.eml"}}).
 		Handler(func(_ context.Context, _ struct{}) (map[string]any, error) {
 			ids, err := mb.ListUnread()
 			if err != nil {
@@ -28,6 +31,8 @@ func NewServer(mb Mailbox) *mcp.Server {
 
 	srv.Tool("email.fetch").
 		Description("Fetch the raw RFC 5322 message for an unread id, base64-encoded.").
+		ReadOnly().
+		OutputSchema(map[string]any{"raw": "<base64>"}).
 		Handler(func(_ context.Context, in struct {
 			ID string `json:"id"`
 		}) (map[string]any, error) {
@@ -40,6 +45,8 @@ func NewServer(mb Mailbox) *mcp.Server {
 
 	srv.Tool("email.mark_seen").
 		Description("Mark a message as seen so it is not ingested again.").
+		Idempotent().
+		OutputSchema(map[string]any{"ok": true}).
 		Handler(func(_ context.Context, in struct {
 			ID string `json:"id"`
 		}) (map[string]any, error) {

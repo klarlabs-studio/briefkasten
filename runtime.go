@@ -64,6 +64,7 @@ func NewConfigServer(cfg *Config) (*mcp.Server, *Outbox, error) {
 		registerSendTools(srv, ob)
 	}
 	RegisterResources(srv, sw, ob)
+	RegisterPrompts(srv, sw)
 	return srv, ob, nil
 }
 
@@ -82,6 +83,7 @@ func registerConfigTools(srv *mcp.Server, cfg *Config, sw *Switchable) {
 
 	srv.Tool("config.get").
 		Description("Inspect the active mailbox configuration. Credentials are redacted.").
+		ReadOnly().
 		Handler(func(_ context.Context, _ struct{}) (map[string]any, error) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -104,6 +106,7 @@ func registerConfigTools(srv *mcp.Server, cfg *Config, sw *Switchable) {
 
 	srv.Tool("config.set").
 		Description("Reconfigure the mailbox backend at runtime. Partial update: omitted fields keep their current values. The new backend is validated before it replaces the old one; when the server was started from a config file the change is persisted there.").
+		Destructive().
 		Handler(func(_ context.Context, in struct {
 			Backend string     `json:"backend,omitempty"`
 			Maildir string     `json:"maildir,omitempty"`

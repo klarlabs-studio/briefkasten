@@ -12,6 +12,7 @@ import (
 func registerSendTools(srv *mcp.Server, ob *Outbox) {
 	srv.Tool("email.send").
 		Description("Queue an outbound email. Returns the outbox id; delivery is asynchronous — poll email.send_status.").
+		OutputSchema(map[string]any{"id": "abc123", "state": "queued"}).
 		Handler(func(_ context.Context, in struct {
 			To      []string `json:"to"`
 			Subject string   `json:"subject"`
@@ -26,6 +27,8 @@ func registerSendTools(srv *mcp.Server, ob *Outbox) {
 
 	srv.Tool("email.send_status").
 		Description("Report the lifecycle state of a queued email: queued, sending, sent, or failed (with error).").
+		ReadOnly().
+		OutputSchema(map[string]any{"id": "abc123", "state": "sent", "attempts": 1}).
 		Handler(func(_ context.Context, in struct {
 			ID string `json:"id"`
 		}) (map[string]any, error) {
