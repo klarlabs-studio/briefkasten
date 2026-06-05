@@ -56,5 +56,16 @@ func scoped(mb Mailbox, folder string) (Mailbox, error) {
 	return fm.InFolder(folder)
 }
 
+// Curator is an optional Mailbox capability: human curation of the
+// unread backlog. Both operations are soft moves — Archive files the
+// message away, Delete moves it to trash. Nothing is ever expunged;
+// data is never destroyed.
+type Curator interface {
+	// Archive moves an unread message to the archive.
+	Archive(id string) error
+	// Delete moves an unread message to the trash.
+	Delete(id string) error
+}
+
 // ErrBadID rejects message ids that try to escape the mailbox.
 var ErrBadID = errors.New("briefkasten: invalid message id")

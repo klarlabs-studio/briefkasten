@@ -135,3 +135,29 @@ func (d *DirMailbox) InFolder(name string) (Mailbox, error) {
 }
 
 var _ FolderMailbox = (*DirMailbox)(nil)
+
+// moveTo relocates an unread message into a hidden sub-maildir.
+func (d *DirMailbox) moveTo(sub, id string) error {
+	from, err := d.safePath("new", id)
+	if err != nil {
+		return err
+	}
+	destDir := filepath.Join(d.root, sub, "new")
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return fmt.Errorf("briefkasten: prepare %s: %w", sub, err)
+	}
+	if err := os.Rename(from, filepath.Join(destDir, id)); err != nil {
+		return fmt.Errorf("briefkasten: move %q to %s: %w", id, sub, err)
+	}
+	return nil
+}
+
+// Archive moves an unread message to .archive/new — out of the backlog,
+// never destroyed.
+func (d *DirMailbox) Archive(id string) error { return d.moveTo(".archive", id) }
+
+// Delete moves an unread message to .trash/new — a soft delete; real
+// removal stays a human decision outside briefkasten.
+func (d *DirMailbox) Delete(id string) error { return d.moveTo(".trash", id) }
+
+var _ Curator = (*DirMailbox)(nil)

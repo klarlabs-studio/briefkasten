@@ -65,10 +65,29 @@ func (s *Switchable) InFolder(name string) (Mailbox, error) {
 	return nil, errors.New("briefkasten: backend has no folder support")
 }
 
+// Archive forwards to the backend's Curator.
+func (s *Switchable) Archive(id string) error {
+	cu, ok := s.current().(Curator)
+	if !ok {
+		return errors.New("briefkasten: backend has no curation support")
+	}
+	return cu.Archive(id)
+}
+
+// Delete forwards to the backend's Curator.
+func (s *Switchable) Delete(id string) error {
+	cu, ok := s.current().(Curator)
+	if !ok {
+		return errors.New("briefkasten: backend has no curation support")
+	}
+	return cu.Delete(id)
+}
+
 var (
 	_ Mailbox       = (*Switchable)(nil)
 	_ Searcher      = (*Switchable)(nil)
 	_ FolderMailbox = (*Switchable)(nil)
+	_ Curator       = (*Switchable)(nil)
 )
 
 // NewConfigServer builds the configured backend and serves it behind a

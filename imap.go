@@ -227,6 +227,48 @@ func (m *IMAPMailbox) MarkSeen(id string) error {
 	return nil
 }
 
+// fileTo copies a message into the named folder (created when missing)
+// and marks the original seen. Deliberately not MOVE: MOVE expunges the
+// source, and briefkasten never expunges — the original survives, seen.
+func (m *IMAPMailbox) fileTo(folder, id string) error {
+	uid, err := parseUID(id)
+	if err != nil {
+		return err
+	}
+	c, err := m.dial()
+	if err != nil {
+		return err
+	}
+	defer closeClient(c)
+
+	if _, err := c.Copy(imap.UIDSetNum(uid), folder).Wait(); err != nil {
+		// Folder may not exist yet: create and retry once.
+		if cerr := c.Create(folder, nil).Wait(); cerr != nil {
+			return fmt.Errorf("imap: copy %s to %s: %w", id, folder, err)
+		}
+		if _, err := c.Copy(imap.UIDSetNum(uid), folder).Wait(); err != nil {
+			return fmt.Errorf("imap: copy %s to %s: %w", id, folder, err)
+		}
+	}
+	if err := c.Store(imap.UIDSetNum(uid), &imap.StoreFlags{
+		Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagSeen},
+	}, nil).Close(); err != nil {
+		return fmt.Errorf("imap: mark seen %s: %w", id, err)
+	}
+	return nil
+}
+
+// Archive files the message into the Archive folder (created when
+// missing); the original is marked seen, never expunged.
+func (m *IMAPMailbox) Archive(id string) error { return m.fileTo("Archive", id) }
+
+// Delete files the message into the Trash folder — a soft delete; real
+// removal stays with the mail provider's retention, briefkasten never
+// expunges.
+func (m *IMAPMailbox) Delete(id string) error { return m.fileTo("Trash", id) }
+
+var _ Curator = (*IMAPMailbox)(nil)
+
 func parseUID(id string) (imap.UID, error) {
 	n, err := strconv.ParseUint(id, 10, 32)
 	if err != nil || n == 0 {

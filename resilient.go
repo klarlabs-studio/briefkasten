@@ -133,8 +133,29 @@ func (r *ResilientMailbox) InFolder(name string) (Mailbox, error) {
 	return Resilient(inner, ResilienceConfig{}), nil
 }
 
+// Archive forwards to the wrapped backend's Curator through the pipeline.
+func (r *ResilientMailbox) Archive(id string) error {
+	cu, ok := r.mb.(Curator)
+	if !ok {
+		return errors.New("briefkasten: backend has no curation support")
+	}
+	_, err := r.execute(func() (any, error) { return nil, cu.Archive(id) })
+	return err
+}
+
+// Delete forwards to the wrapped backend's Curator through the pipeline.
+func (r *ResilientMailbox) Delete(id string) error {
+	cu, ok := r.mb.(Curator)
+	if !ok {
+		return errors.New("briefkasten: backend has no curation support")
+	}
+	_, err := r.execute(func() (any, error) { return nil, cu.Delete(id) })
+	return err
+}
+
 var (
 	_ Mailbox       = (*ResilientMailbox)(nil)
 	_ Searcher      = (*ResilientMailbox)(nil)
 	_ FolderMailbox = (*ResilientMailbox)(nil)
+	_ Curator       = (*ResilientMailbox)(nil)
 )
