@@ -14,6 +14,11 @@ contract instead of binding to IMAP libraries:
 | `email.mark_seen` | `{"id": "..."}` → `{"ok": true}` — message won't be listed again |
 | `email.send`* | `{"to": [...], "subject", "body"}` → `{"id", "state": "queued"}` |
 | `email.send_status`* | `{"id"}` → `{"state": "queued\|sending\|sent\|failed", "attempts", "error?"}` |
+| `email.search` | `{"query", "folder?", "account?"}` → `{"ids": [...]}` — unread scope, case-insensitive; IMAP searches server-side |
+
+`email.list_unread`, `email.fetch`, `email.mark_seen`, and `email.search`
+accept optional `folder` (see `email://folders`) and `account` (see
+`email://accounts`) arguments.
 
 \* Sending registers only when an outbox is configured.
 
@@ -21,7 +26,7 @@ Beyond tools, the full MCP surface:
 
 | Surface | What |
 |---|---|
-| Resources | `email://inbox`, `email://inbox/{id}` (raw RFC 5322), `email://outbox`, `email://outbox/{id}` — read state without spending tool calls; `{id}` completes from live unread ids |
+| Resources | `email://inbox`, `email://inbox/{id}` (raw RFC 5322), `email://outbox`, `email://outbox/{id}`, `email://folders`, `email://accounts` — read state without spending tool calls; `{id}` completes from live unread ids |
 | Prompts | `summarize_inbox` (embeds every unread message), `draft_reply(id)` (embeds the original) |
 | Annotations | read tools are `readOnlyHint`, `mark_seen` is `idempotentHint`, `config.set` is `destructiveHint` |
 | Instructions | the consumption contract (mark seen only after successful processing) ships as server instructions |
@@ -79,6 +84,40 @@ delivers asynchronously; `email.send` returns immediately with the outbox
 id. SMTP delivery is fortify-wrapped (timeout, exponential-backoff retry).
 Env overrides: `BRIEFKASTEN_OUTBOX_DIR` / `_FROM` / `_DELIVER_DIR`,
 `BRIEFKASTEN_SMTP_ADDR` / `_USER` / `_PASSWORD` / `_INSECURE`.
+
+### OAuth2 (Gmail, Outlook)
+
+App passwords are being phased out; configure OAuth2 instead:
+
+```yaml
+imap:
+  addr: imap.gmail.com:993
+  username: you@gmail.com
+  oauth2:
+    client_id: "<oauth client id>"
+    client_secret: "<oauth client secret>"
+    refresh_token: "<refresh token>"
+    token_url: https://oauth2.googleapis.com/token
+    mechanism: xoauth2        # or oauthbearer
+```
+
+Access tokens are minted and refreshed automatically from the refresh
+token. Obtain the refresh token once via your provider's consent flow
+(for Google: create an OAuth client in Cloud Console with the
+`https://mail.google.com/` scope, then run any standard authorization-code
+flow — the OAuth 2.0 Playground works). The same block applies to
+`outbox.smtp.oauth2` for sending.
+
+### Multiple accounts
+
+```yaml
+maildir: ./maildir            # the default account
+accounts:
+  business:
+    imap: { addr: imap.example.org:993, username: b@firm.example, password: "..." }
+```
+
+Tools route via `account`; `email://accounts` lists the names.
 
 ### Runtime reconfiguration over MCP
 

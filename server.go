@@ -48,7 +48,7 @@ func NewServer(mb Mailbox, serverOpts ...ServerOption) *mcp.Server {
 		}
 		return scoped(box, folder)
 	}
-	srv := mcp.NewServer(mcp.ServerInfo{Name: "briefkasten", Version: "0.5.0"},
+	srv := mcp.NewServer(mcp.ServerInfo{Name: "briefkasten", Version: "0.6.0"},
 		mcp.WithInstructions(Instructions))
 
 	srv.Tool("email.list_unread").
