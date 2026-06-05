@@ -113,6 +113,8 @@ func NewServer(mb Mailbox, serverOpts ...ServerOption) *mcp.Server {
 			return map[string]any{"ok": true}, nil
 		})
 
+	registerCurateTools(srv, resolve)
+
 	srv.Tool("email.search").
 		Description("Search unread messages for a text query (case-insensitive). Returns matching ids.").
 		ReadOnly().

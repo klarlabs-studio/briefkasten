@@ -16,8 +16,10 @@ email.list_unread + email.fetch, then acknowledge each ingested message
 with email.mark_seen — only after processing succeeded, so failures stay
 unread for retry. Read state cheaply through the email://inbox and
 email://outbox resources. Send mail with email.send (asynchronous: poll
-email.send_status). Nothing is ever deleted; mark_seen is the only
-acknowledgement.`
+email.send_status). Curate with email.archive / email.delete — both are
+soft moves and require human confirmation: the host is asked via
+elicitation, or you must ask the user and pass confirm=true. Nothing is
+ever expunged.`
 
 // RegisterPrompts exposes prompt templates over the mailbox: hosts get
 // ready-made, content-embedded prompts instead of assembling tool calls.
