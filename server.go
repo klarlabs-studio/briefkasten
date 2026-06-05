@@ -3,14 +3,51 @@ package briefkasten
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 
 	mcp "github.com/felixgeelhaar/mcp-go"
 )
 
+// ServerOption configures the MCP server surface.
+type ServerOption func(*serverOptions)
+
+type serverOptions struct {
+	accounts map[string]Mailbox
+}
+
+// WithAccounts registers named mailboxes alongside the default one; tools
+// route via their optional account argument.
+func WithAccounts(accounts map[string]Mailbox) ServerOption {
+	return func(o *serverOptions) { o.accounts = accounts }
+}
+
+// resolveAccount picks the mailbox for an optional account argument.
+func (o *serverOptions) resolveAccount(defaultBox Mailbox, account string) (Mailbox, error) {
+	if account == "" {
+		return defaultBox, nil
+	}
+	box, ok := o.accounts[account]
+	if !ok {
+		return nil, fmt.Errorf("briefkasten: unknown account %q", account)
+	}
+	return box, nil
+}
+
 // NewServer exposes a Mailbox as an MCP server. The three email.* tools are
 // the connector contract: any client that speaks them can consume any
 // backend.
-func NewServer(mb Mailbox) *mcp.Server {
+func NewServer(mb Mailbox, serverOpts ...ServerOption) *mcp.Server {
+	opts := &serverOptions{}
+	for _, opt := range serverOpts {
+		opt(opts)
+	}
+	resolve := func(account, folder string) (Mailbox, error) {
+		box, err := opts.resolveAccount(mb, account)
+		if err != nil {
+			return nil, err
+		}
+		return scoped(box, folder)
+	}
 	srv := mcp.NewServer(mcp.ServerInfo{Name: "briefkasten", Version: "0.5.0"},
 		mcp.WithInstructions(Instructions))
 
@@ -20,9 +57,10 @@ func NewServer(mb Mailbox) *mcp.Server {
 		UIResource(InboxUIResourceURI).
 		OutputSchema(map[string]any{"ids": []string{"m1.eml"}}).
 		Handler(func(_ context.Context, in struct {
-			Folder string `json:"folder,omitempty"`
+			Folder  string `json:"folder,omitempty"`
+			Account string `json:"account,omitempty"`
 		}) (map[string]any, error) {
-			box, err := scoped(mb, in.Folder)
+			box, err := resolve(in.Account, in.Folder)
 			if err != nil {
 				return nil, err
 			}
@@ -41,10 +79,11 @@ func NewServer(mb Mailbox) *mcp.Server {
 		ReadOnly().
 		OutputSchema(map[string]any{"raw": "<base64>"}).
 		Handler(func(_ context.Context, in struct {
-			ID     string `json:"id"`
-			Folder string `json:"folder,omitempty"`
+			ID      string `json:"id"`
+			Folder  string `json:"folder,omitempty"`
+			Account string `json:"account,omitempty"`
 		}) (map[string]any, error) {
-			box, err := scoped(mb, in.Folder)
+			box, err := resolve(in.Account, in.Folder)
 			if err != nil {
 				return nil, err
 			}
@@ -60,10 +99,11 @@ func NewServer(mb Mailbox) *mcp.Server {
 		Idempotent().
 		OutputSchema(map[string]any{"ok": true}).
 		Handler(func(_ context.Context, in struct {
-			ID     string `json:"id"`
-			Folder string `json:"folder,omitempty"`
+			ID      string `json:"id"`
+			Folder  string `json:"folder,omitempty"`
+			Account string `json:"account,omitempty"`
 		}) (map[string]any, error) {
-			box, err := scoped(mb, in.Folder)
+			box, err := resolve(in.Account, in.Folder)
 			if err != nil {
 				return nil, err
 			}
@@ -78,10 +118,11 @@ func NewServer(mb Mailbox) *mcp.Server {
 		ReadOnly().
 		OutputSchema(map[string]any{"ids": []string{"m1.eml"}}).
 		Handler(func(_ context.Context, in struct {
-			Query  string `json:"query"`
-			Folder string `json:"folder,omitempty"`
+			Query   string `json:"query"`
+			Folder  string `json:"folder,omitempty"`
+			Account string `json:"account,omitempty"`
 		}) (map[string]any, error) {
-			box, err := scoped(mb, in.Folder)
+			box, err := resolve(in.Account, in.Folder)
 			if err != nil {
 				return nil, err
 			}

@@ -81,8 +81,12 @@ func NewConfigServer(cfg *Config) (*mcp.Server, *Outbox, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	accounts, err := cfg.BuildAccounts()
+	if err != nil {
+		return nil, nil, err
+	}
 	sw := NewSwitchable(mb)
-	srv := NewServer(sw)
+	srv := NewServer(sw, WithAccounts(accounts))
 	if cfg.RuntimeConfig {
 		registerConfigTools(srv, cfg, sw)
 	}
@@ -93,7 +97,7 @@ func NewConfigServer(cfg *Config) (*mcp.Server, *Outbox, error) {
 	if ob != nil {
 		registerSendTools(srv, ob)
 	}
-	RegisterResources(srv, sw, ob)
+	RegisterResources(srv, sw, ob, WithAccounts(accounts))
 	RegisterPrompts(srv, sw)
 	RegisterUI(srv)
 	return srv, ob, nil

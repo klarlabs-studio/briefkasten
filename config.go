@@ -23,6 +23,10 @@ type Config struct {
 	// Outbox configures outbound mail; the email.send tools register only
 	// when Outbox.Dir is set.
 	Outbox OutboxSettings `yaml:"outbox"`
+	// Accounts are additional named mailboxes; the top-level backend is
+	// the default account. Tools route via their optional account
+	// argument.
+	Accounts map[string]AccountSettings `yaml:"accounts"`
 	// RuntimeConfig enables the config.get / config.set MCP tools that
 	// reconfigure the backend at runtime. Off by default: config.set
 	// accepts mailbox credentials, so only enable it on trusted networks.
@@ -64,6 +68,30 @@ type SMTPSettings struct {
 	ImplicitTLS bool            `yaml:"implicit_tls"`
 	Insecure    bool            `yaml:"insecure"`
 	OAuth2      *OAuth2Settings `yaml:"oauth2"`
+}
+
+// AccountSettings configures one named mailbox.
+type AccountSettings struct {
+	Backend string       `yaml:"backend"`
+	Maildir string       `yaml:"maildir"`
+	IMAP    IMAPSettings `yaml:"imap"`
+}
+
+// BuildAccounts constructs the named mailboxes.
+func (c *Config) BuildAccounts() (map[string]Mailbox, error) {
+	if len(c.Accounts) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]Mailbox, len(c.Accounts))
+	for name, a := range c.Accounts {
+		sub := &Config{Backend: a.Backend, Maildir: a.Maildir, IMAP: a.IMAP}
+		mb, _, err := sub.BuildMailbox()
+		if err != nil {
+			return nil, fmt.Errorf("config: account %q: %w", name, err)
+		}
+		out[name] = mb
+	}
+	return out, nil
 }
 
 // LoadConfig returns the default configuration overlaid with the YAML file

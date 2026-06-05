@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/felixgeelhaar/mcp-go/server"
@@ -19,7 +20,25 @@ import (
 // Hosts read state directly instead of spending tool calls; {id} arguments
 // complete from live data. ob may be nil when sending is not configured —
 // the outbox resources then report an empty outbox.
-func RegisterResources(srv *server.Server, mb Mailbox, ob *Outbox) {
+func RegisterResources(srv *server.Server, mb Mailbox, ob *Outbox, serverOpts ...ServerOption) {
+	opts := &serverOptions{}
+	for _, opt := range serverOpts {
+		opt(opts)
+	}
+
+	srv.Resource("email://accounts").
+		Name("Accounts").
+		Description("Configured mailbox accounts; \"default\" is the primary.").
+		MimeType("application/json").
+		Handler(func(_ context.Context, uri string, _ map[string]string) (*server.ResourceContent, error) {
+			names := []string{"default"}
+			for name := range opts.accounts {
+				names = append(names, name)
+			}
+			sort.Strings(names[1:])
+			return jsonResource(uri, map[string]any{"accounts": names})
+		})
+
 	srv.Resource("email://inbox").
 		Name("Inbox").
 		Description("Unread message ids in the mailbox.").
