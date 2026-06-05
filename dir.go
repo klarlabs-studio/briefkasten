@@ -1,6 +1,7 @@
 package briefkasten
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -78,3 +79,25 @@ func (m *DirMailbox) safePath(sub, id string) (string, error) {
 	}
 	return filepath.Join(m.root, sub, id), nil
 }
+
+// Search scans the unread backlog for a case-insensitive substring match.
+func (d *DirMailbox) Search(query string) ([]string, error) {
+	ids, err := d.ListUnread()
+	if err != nil {
+		return nil, err
+	}
+	needle := []byte(strings.ToLower(query))
+	var out []string
+	for _, id := range ids {
+		raw, err := d.Fetch(id)
+		if err != nil {
+			continue
+		}
+		if bytes.Contains(bytes.ToLower(raw), needle) {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+var _ Searcher = (*DirMailbox)(nil)

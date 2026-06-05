@@ -23,5 +23,14 @@ type Mailbox interface {
 	MarkSeen(id string) error
 }
 
+// Searcher is an optional Mailbox capability: full-text search over the
+// unread backlog. Backends without it get a server-side fallback
+// (list + fetch + substring match).
+type Searcher interface {
+	// Search returns the unread ids whose raw content matches the query
+	// (case-insensitive).
+	Search(query string) ([]string, error)
+}
+
 // ErrBadID rejects message ids that try to escape the mailbox.
 var ErrBadID = errors.New("briefkasten: invalid message id")

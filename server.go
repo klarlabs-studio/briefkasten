@@ -57,5 +57,22 @@ func NewServer(mb Mailbox) *mcp.Server {
 			return map[string]any{"ok": true}, nil
 		})
 
+	srv.Tool("email.search").
+		Description("Search unread messages for a text query (case-insensitive). Returns matching ids.").
+		ReadOnly().
+		OutputSchema(map[string]any{"ids": []string{"m1.eml"}}).
+		Handler(func(_ context.Context, in struct {
+			Query string `json:"query"`
+		}) (map[string]any, error) {
+			ids, err := searchMailbox(mb, in.Query)
+			if err != nil {
+				return nil, err
+			}
+			if ids == nil {
+				ids = []string{}
+			}
+			return map[string]any{"ids": ids}, nil
+		})
+
 	return srv
 }

@@ -134,6 +134,31 @@ func (m *IMAPMailbox) Fetch(id string) ([]byte, error) {
 	return raw, nil
 }
 
+// Search returns unseen UIDs matching the query (UID SEARCH UNSEEN TEXT).
+func (m *IMAPMailbox) Search(query string) ([]string, error) {
+	c, err := m.dial()
+	if err != nil {
+		return nil, err
+	}
+	defer closeClient(c)
+
+	data, err := c.UIDSearch(&imap.SearchCriteria{
+		NotFlag: []imap.Flag{imap.FlagSeen},
+		Text:    []string{query},
+	}, nil).Wait()
+	if err != nil {
+		return nil, fmt.Errorf("imap: search: %w", err)
+	}
+	uids := data.AllUIDs()
+	ids := make([]string, len(uids))
+	for i, uid := range uids {
+		ids[i] = strconv.FormatUint(uint64(uid), 10)
+	}
+	return ids, nil
+}
+
+var _ Searcher = (*IMAPMailbox)(nil)
+
 // MarkSeen sets the \Seen flag on the message with the given UID.
 func (m *IMAPMailbox) MarkSeen(id string) error {
 	uid, err := parseUID(id)
