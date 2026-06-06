@@ -10,11 +10,11 @@ import (
 	"errors"
 	"fmt"
 
-	mcp "github.com/felixgeelhaar/mcp-go"
-	"github.com/felixgeelhaar/mcp-go/server"
+	mcp "go.klarlabs.de/mcp"
+	"go.klarlabs.de/mcp/server"
 
-	"github.com/felixgeelhaar/briefkasten/application"
-	"github.com/felixgeelhaar/briefkasten/domain"
+	"go.klarlabs.de/briefkasten/application"
+	"go.klarlabs.de/briefkasten/domain"
 )
 
 // InboxUIResourceURI is the MCP Apps resource the inbox UI is served from.

@@ -3,8 +3,8 @@ package mcpserver
 import (
 	"context"
 
-	mcp "github.com/felixgeelhaar/mcp-go"
-	"github.com/felixgeelhaar/mcp-go/server"
+	mcp "go.klarlabs.de/mcp"
+	"go.klarlabs.de/mcp/server"
 )
 
 // registerUI serves the interactive inbox as an MCP Apps resource.

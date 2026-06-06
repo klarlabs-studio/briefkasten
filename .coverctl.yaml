@@ -18,7 +18,7 @@ policy:
       min: 65
     - name: facade
       match:
-        - github.com/felixgeelhaar/briefkasten
+        - go.klarlabs.de/briefkasten
       min: 60
     - name: cmd
       match:

@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	mcp "github.com/felixgeelhaar/mcp-go"
+	mcp "go.klarlabs.de/mcp"
 )
 
 // NewConfigServer builds the configured backend and serves it behind a

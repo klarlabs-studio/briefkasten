@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/felixgeelhaar/briefkasten/domain"
+	"go.klarlabs.de/briefkasten/domain"
 )
 
 // Sender delivers messages as .eml files into a maildir-style new/

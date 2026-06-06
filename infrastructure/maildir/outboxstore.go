@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/felixgeelhaar/briefkasten/domain"
+	"go.klarlabs.de/briefkasten/domain"
 )
 
 // OutboxStore persists outbound messages as JSON files under

@@ -9,7 +9,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/felixgeelhaar/briefkasten"
+	"go.klarlabs.de/briefkasten"
 )
 
 // run dispatches the CLI. Empty args or "serve" starts the MCP server;

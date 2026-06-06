@@ -1,4 +1,4 @@
-module github.com/felixgeelhaar/briefkasten
+module go.klarlabs.de/briefkasten
 
 go 1.26.3
 
@@ -6,10 +6,10 @@ require (
 	github.com/emersion/go-imap/v2 v2.0.0-beta.8
 	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6
 	github.com/emersion/go-smtp v0.24.0
-	github.com/felixgeelhaar/bolt v1.4.0
-	github.com/felixgeelhaar/fortify v1.5.1
-	github.com/felixgeelhaar/mcp-go v1.14.0
-	github.com/felixgeelhaar/statekit v1.7.0
+	go.klarlabs.de/bolt v1.5.2
+	go.klarlabs.de/fortify v1.6.0
+	go.klarlabs.de/mcp v1.15.0
+	go.klarlabs.de/statekit v1.8.0
 	golang.org/x/oauth2 v0.36.0
 	gopkg.in/yaml.v3 v3.0.1
 )

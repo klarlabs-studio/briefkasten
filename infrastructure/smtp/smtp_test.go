@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/felixgeelhaar/briefkasten/domain"
+	"go.klarlabs.de/briefkasten/domain"
 
 	"github.com/emersion/go-smtp"
 )

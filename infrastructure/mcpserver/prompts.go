@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"strings"
 
-	mcp "github.com/felixgeelhaar/mcp-go"
-	"github.com/felixgeelhaar/mcp-go/server"
+	mcp "go.klarlabs.de/mcp"
+	"go.klarlabs.de/mcp/server"
 
-	"github.com/felixgeelhaar/briefkasten/application"
+	"go.klarlabs.de/briefkasten/application"
 )
 
 var errNoOutbox = errors.New("briefkasten: outbox not configured")

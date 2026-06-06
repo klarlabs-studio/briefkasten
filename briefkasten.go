@@ -12,16 +12,16 @@
 package briefkasten
 
 import (
-	mcp "github.com/felixgeelhaar/mcp-go"
+	mcp "go.klarlabs.de/mcp"
 
-	"github.com/felixgeelhaar/briefkasten/application"
-	"github.com/felixgeelhaar/briefkasten/domain"
-	"github.com/felixgeelhaar/briefkasten/infrastructure/auth"
-	"github.com/felixgeelhaar/briefkasten/infrastructure/imap"
-	"github.com/felixgeelhaar/briefkasten/infrastructure/maildir"
-	"github.com/felixgeelhaar/briefkasten/infrastructure/mcpserver"
-	"github.com/felixgeelhaar/briefkasten/infrastructure/resilience"
-	"github.com/felixgeelhaar/briefkasten/infrastructure/smtp"
+	"go.klarlabs.de/briefkasten/application"
+	"go.klarlabs.de/briefkasten/domain"
+	"go.klarlabs.de/briefkasten/infrastructure/auth"
+	"go.klarlabs.de/briefkasten/infrastructure/imap"
+	"go.klarlabs.de/briefkasten/infrastructure/maildir"
+	"go.klarlabs.de/briefkasten/infrastructure/mcpserver"
+	"go.klarlabs.de/briefkasten/infrastructure/resilience"
+	"go.klarlabs.de/briefkasten/infrastructure/smtp"
 )
 
 // Mailbox and friends are the domain ports, re-exported for consumers.

@@ -8,8 +8,8 @@ import (
 	"github.com/emersion/go-sasl"
 	"github.com/emersion/go-smtp"
 
-	"github.com/felixgeelhaar/briefkasten/domain"
-	briefauth "github.com/felixgeelhaar/briefkasten/infrastructure/auth"
+	"go.klarlabs.de/briefkasten/domain"
+	briefauth "go.klarlabs.de/briefkasten/infrastructure/auth"
 )
 
 // oauthSMTPSession accepts OAUTHBEARER with one specific token.

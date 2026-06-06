@@ -28,10 +28,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/felixgeelhaar/bolt"
-	mcp "github.com/felixgeelhaar/mcp-go"
+	"go.klarlabs.de/bolt"
+	mcp "go.klarlabs.de/mcp"
 
-	"github.com/felixgeelhaar/briefkasten"
+	"go.klarlabs.de/briefkasten"
 )
 
 // Build metadata, injected by goreleaser.

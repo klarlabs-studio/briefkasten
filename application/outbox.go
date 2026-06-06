@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/felixgeelhaar/briefkasten/domain"
+	"go.klarlabs.de/briefkasten/domain"
 )
 
 // Outbox drives outbound messages through the domain lifecycle over the

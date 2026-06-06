@@ -6,13 +6,13 @@ import (
 	"net"
 	"testing"
 
-	"github.com/felixgeelhaar/briefkasten/domain"
+	"go.klarlabs.de/briefkasten/domain"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
 	"github.com/emersion/go-imap/v2/imapserver/imapmemserver"
 
-	bimap "github.com/felixgeelhaar/briefkasten/infrastructure/imap"
+	bimap "go.klarlabs.de/briefkasten/infrastructure/imap"
 )
 
 const testMessage = "From: amt@finanzamt.example\r\nSubject: Bescheid\r\n\r\nSehr geehrte Damen und Herren,\r\n"

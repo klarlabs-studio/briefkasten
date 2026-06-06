@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/felixgeelhaar/briefkasten"
+	"go.klarlabs.de/briefkasten"
 )
 
 func writeConfig(t *testing.T, content string) string {

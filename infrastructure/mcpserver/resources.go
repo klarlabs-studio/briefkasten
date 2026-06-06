@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"strings"
 
-	mcp "github.com/felixgeelhaar/mcp-go"
-	"github.com/felixgeelhaar/mcp-go/server"
+	mcp "go.klarlabs.de/mcp"
+	"go.klarlabs.de/mcp/server"
 
-	"github.com/felixgeelhaar/briefkasten/application"
+	"go.klarlabs.de/briefkasten/application"
 )
 
 // registerResources exposes mailbox and outbox state as MCP resources —

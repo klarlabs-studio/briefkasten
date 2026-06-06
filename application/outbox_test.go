@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/felixgeelhaar/briefkasten/application"
-	"github.com/felixgeelhaar/briefkasten/domain"
-	"github.com/felixgeelhaar/briefkasten/infrastructure/maildir"
+	"go.klarlabs.de/briefkasten/application"
+	"go.klarlabs.de/briefkasten/domain"
+	"go.klarlabs.de/briefkasten/infrastructure/maildir"
 )
 
 // fakeSender records deliveries and fails on demand.

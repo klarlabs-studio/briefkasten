@@ -4,7 +4,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/felixgeelhaar/briefkasten/domain"
+	"go.klarlabs.de/briefkasten/domain"
 )
 
 // Switchable is a Mailbox whose backend can be swapped at runtime

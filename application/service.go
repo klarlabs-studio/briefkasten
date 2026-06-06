@@ -12,7 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/felixgeelhaar/briefkasten/domain"
+	"go.klarlabs.de/briefkasten/domain"
 )
 
 // Service exposes the mailbox use cases over a default mailbox and any

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/felixgeelhaar/briefkasten/application"
-	"github.com/felixgeelhaar/briefkasten/domain"
+	"go.klarlabs.de/briefkasten/application"
+	"go.klarlabs.de/briefkasten/domain"
 )
 
 // memBox is an in-memory Mailbox with optional capabilities.

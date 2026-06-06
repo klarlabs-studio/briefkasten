@@ -3,7 +3,7 @@ package domain
 import (
 	"fmt"
 
-	"github.com/felixgeelhaar/statekit"
+	"go.klarlabs.de/statekit"
 )
 
 // OutboxStates are the lifecycle states an outbound message moves through.

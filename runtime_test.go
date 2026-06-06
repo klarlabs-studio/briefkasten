@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/felixgeelhaar/mcp-go/testutil"
+	"go.klarlabs.de/mcp/testutil"
 )
 
 func newRootDir(t *testing.T) string {

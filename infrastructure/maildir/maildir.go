@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/felixgeelhaar/briefkasten/domain"
+	"go.klarlabs.de/briefkasten/domain"
 )
 
 // Mailbox is the local-first backend: a maildir-style directory where

@@ -39,7 +39,7 @@ Built on [mcp-go](https://github.com/felixgeelhaar/mcp-go).
 ## Run
 
 ```bash
-go install github.com/felixgeelhaar/briefkasten/cmd/briefkasten@latest
+go install go.klarlabs.de/briefkasten/cmd/briefkasten@latest
 
 BRIEFKASTEN_ADDR=:8090 BRIEFKASTEN_MAILDIR=./maildir briefkasten   # serve (default)
 ```

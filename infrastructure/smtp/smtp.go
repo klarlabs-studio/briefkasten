@@ -9,13 +9,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/felixgeelhaar/briefkasten/domain"
-	"github.com/felixgeelhaar/briefkasten/infrastructure/auth"
+	"go.klarlabs.de/briefkasten/domain"
+	"go.klarlabs.de/briefkasten/infrastructure/auth"
 
 	"github.com/emersion/go-sasl"
 	"github.com/emersion/go-smtp"
-	"github.com/felixgeelhaar/fortify/retry"
-	"github.com/felixgeelhaar/fortify/timeout"
+	"go.klarlabs.de/fortify/retry"
+	"go.klarlabs.de/fortify/timeout"
 )
 
 // Config configures an Sender.
