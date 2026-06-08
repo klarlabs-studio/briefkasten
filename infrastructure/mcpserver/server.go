@@ -55,8 +55,14 @@ func New(svc *application.Service, serverOpts ...Option) *mcp.Server {
 		opt(opts)
 	}
 
-	srv := mcp.NewServer(mcp.ServerInfo{Name: "briefkasten", Version: "0.8.0"},
-		mcp.WithInstructions(Instructions))
+	srv := mcp.NewServer(mcp.ServerInfo{
+		Name:    "briefkasten",
+		Version: "0.8.0",
+		// Advertise resources.subscribe so hosts can subscribe to email://inbox
+		// and receive notifications/resources/updated when new mail arrives
+		// (a watcher drives the push; see cmd/briefkasten).
+		Capabilities: mcp.Capabilities{ResourceSubscribe: true},
+	}, mcp.WithInstructions(Instructions))
 
 	registerTools(srv, svc)
 	registerCurateTools(srv, svc)

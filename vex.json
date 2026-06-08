@@ -3967,6 +3967,19 @@
       "_nox_fingerprint": "f0fffc124d71c96b480100ff3cc30b24db723f427dd9be09f6215912696a2b1a",
       "justification": "vulnerable_code_not_present",
       "impact_statement": "Reviewed 2026-06-08: false positive \u2014 the Split API Key regex matched a long CamelCase Go test function name in domain/render_test.go, not a credential. No secret present."
+    },
+    {
+      "vulnerability": "SEC-697",
+      "status": "not_affected",
+      "products": [
+        "go.klarlabs.de/briefkasten"
+      ],
+      "_nox_locations": [
+        "infrastructure/imap/watcher_external_test.go:72"
+      ],
+      "_nox_fingerprint": "9534c0f277e042193b28e9b2895b9338202eec33cbab55e51dde6d9b811624d0",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "Reviewed 2026-06-08: false positive \u2014 the literal/api-key secrets rule matched test code in the IMAP watcher test (memserver dummy credentials / a long Go test function name), not a real credential."
     }
   ]
 }

@@ -68,11 +68,24 @@ type (
 	IMAPConfig  = imap.Config
 )
 
+// Watcher reports new mail so the MCP server can push resource updates to
+// subscribers instead of relying on polling. See Config.BuildWatcher.
+type Watcher = domain.MailboxWatcher
+
+// InboxResourceURI is the resource subscribers watch for new-mail updates.
+const InboxResourceURI = "email://inbox"
+
 // NewDirMailbox prepares a maildir-style directory backend.
 func NewDirMailbox(root string) (*DirMailbox, error) { return maildir.New(root) }
 
 // NewIMAPMailbox validates cfg and returns an IMAP backend.
 func NewIMAPMailbox(cfg IMAPConfig) (*IMAPMailbox, error) { return imap.New(cfg) }
+
+// NewDirWatcher watches a maildir new/ directory for arriving mail.
+func NewDirWatcher(root string) Watcher { return maildir.NewWatcher(root) }
+
+// NewIMAPWatcher watches an IMAP mailbox for new mail using IDLE.
+func NewIMAPWatcher(cfg IMAPConfig) Watcher { return imap.NewWatcher(cfg) }
 
 // NewDirSender delivers messages as .eml files into a maildir new/.
 func NewDirSender(root, from string) (*maildir.Sender, error) { return maildir.NewSender(root, from) }
