@@ -90,6 +90,22 @@ func serve() int {
 		}()
 	}
 
+	// New-mail watcher: push notifications/resources/updated to subscribers of
+	// email://inbox instead of making them poll. Best-effort — the mailbox
+	// stays pollable if watching fails or is unsupported.
+	if watcher := cfg.BuildWatcher(); watcher != nil {
+		go func() {
+			err := watcher.Watch(ctx, func() {
+				if nerr := srv.NotifyResourceUpdated(briefkasten.InboxResourceURI); nerr != nil {
+					log.Debug().Err(nerr).Msg("inbox update notify failed")
+				}
+			})
+			if err != nil && ctx.Err() == nil {
+				log.Warn().Err(err).Msg("inbox watcher stopped; subscribers fall back to polling")
+			}
+		}()
+	}
+
 	log.Info().
 		Str("addr", cfg.Addr).
 		Str("backend", cfg.ResolvedBackend()).

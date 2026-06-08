@@ -210,6 +210,27 @@ func (c *Config) BuildMailbox() (Mailbox, string, error) {
 	}
 }
 
+// BuildWatcher constructs a new-mail watcher for the configured backend so the
+// MCP server can push notifications/resources/updated to subscribers instead
+// of relying on polling. Returns nil when the backend cannot be watched.
+func (c *Config) BuildWatcher() Watcher {
+	switch c.ResolvedBackend() {
+	case "maildir":
+		return NewDirWatcher(c.Maildir)
+	case "imap":
+		return NewIMAPWatcher(IMAPConfig{
+			Addr:     c.IMAP.Addr,
+			Username: c.IMAP.Username,
+			Password: c.IMAP.Password,
+			Mailbox:  c.IMAP.Mailbox,
+			Insecure: c.IMAP.Insecure,
+			OAuth2:   c.IMAP.OAuth2,
+		})
+	default:
+		return nil
+	}
+}
+
 // BuildOutbox constructs the configured outbox with its sender, or
 // (nil, "", nil) when sending is not configured. SMTP wins over the dir
 // sender when both are set.
