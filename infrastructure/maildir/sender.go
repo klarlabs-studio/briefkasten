@@ -23,7 +23,7 @@ func NewSender(root, from string) (*Sender, error) {
 	if from == "" {
 		return nil, fmt.Errorf("dirsender: From address is required")
 	}
-	if err := os.MkdirAll(filepath.Join(root, "new"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "new"), 0o700); err != nil {
 		return nil, fmt.Errorf("dirsender init: %w", err)
 	}
 	return &Sender{root: root, from: from}, nil
@@ -32,7 +32,7 @@ func NewSender(root, from string) (*Sender, error) {
 // Send writes the message as RFC 5322 into new/<id>.eml.
 func (d *Sender) Send(_ context.Context, msg domain.OutboundMessage) error {
 	path := filepath.Join(d.root, "new", msg.ID+".eml")
-	if err := os.WriteFile(path, domain.RenderRFC5322(d.from, msg, time.Now()), 0o644); err != nil {
+	if err := os.WriteFile(path, domain.RenderRFC5322(d.from, msg, time.Now()), 0o600); err != nil {
 		return fmt.Errorf("dirsender write: %w", err)
 	}
 	return nil

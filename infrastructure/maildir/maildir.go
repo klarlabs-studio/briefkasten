@@ -24,7 +24,7 @@ type Mailbox struct {
 // New prepares the directory layout (root/new, root/cur).
 func New(root string) (*Mailbox, error) {
 	for _, sub := range []string{"new", "cur"} {
-		if err := os.MkdirAll(filepath.Join(root, sub), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(root, sub), 0o700); err != nil {
 			return nil, fmt.Errorf("briefkasten: prepare %s: %w", sub, err)
 		}
 	}
@@ -53,7 +53,7 @@ func (m *Mailbox) Fetch(id string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path built by safePath, which rejects ids that escape the mailbox
 	if err != nil {
 		return nil, fmt.Errorf("briefkasten: fetch %q: %w", id, err)
 	}
@@ -147,7 +147,7 @@ func (d *Mailbox) moveTo(sub, id string) error {
 		return err
 	}
 	destDir := filepath.Join(d.root, sub, "new")
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
+	if err := os.MkdirAll(destDir, 0o700); err != nil {
 		return fmt.Errorf("briefkasten: prepare %s: %w", sub, err)
 	}
 	if err := os.Rename(from, filepath.Join(destDir, id)); err != nil {

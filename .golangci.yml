@@ -14,6 +14,7 @@ linters:
     - unconvert
     - unparam
     - copyloopvar
+    - gosec        # org engineering bar — code-level security
   settings:
     errcheck:
       # Writes to the CLI's user-facing streams: a failed Fprint to
@@ -44,6 +45,12 @@ linters:
         - name: error-naming
         - name: increment-decrement
         - name: indent-error-flow
+  exclusions:
+    rules:
+      # Tests legitimately use math/rand (deterministic fixtures, fuzz
+      # seeds). G404 weak-RNG does not apply to test code.
+      - path: _test\.go
+        linters: [gosec]
 
 formatters:
   enable:

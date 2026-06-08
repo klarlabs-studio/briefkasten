@@ -105,7 +105,7 @@ func LoadConfig(path string) (*Config, error) {
 	if path == "" {
 		return cfg, nil
 	}
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) // #nosec G304 -- config path is supplied by the operator running the server
 	if err != nil {
 		return nil, fmt.Errorf("config: read %s: %w", path, err)
 	}
