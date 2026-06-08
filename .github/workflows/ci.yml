@@ -22,6 +22,7 @@ jobs:
     permissions:
       contents: read
       security-events: write
+      pull-requests: write # nox annotate — required by the reusable workflow
     secrets: inherit
     with:
       coverage: true
