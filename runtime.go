@@ -106,7 +106,14 @@ func applyOAuth2Patch(cur *OAuth2Settings, p *oauth2Patch) *OAuth2Settings {
 		n.AccessToken, n.Mechanism = cur.AccessToken, cur.Mechanism
 		n.CredentialsFile = cur.CredentialsFile
 	}
-	if p.CredentialsFile != "" {
+	if p.CredentialsFile != "" && p.CredentialsFile != n.CredentialsFile {
+		// A new credentials file is the source of truth for the client identity.
+		// Clear the carried-over (old-file) client_id/secret/token_url so
+		// LoadCredentials refills them from the new file; an explicit override in
+		// this same patch is applied below and still wins.
+		n.ClientID, n.ClientSecret, n.TokenURL = "", "", ""
+		n.CredentialsFile = p.CredentialsFile
+	} else if p.CredentialsFile != "" {
 		n.CredentialsFile = p.CredentialsFile
 	}
 	if p.ClientID != "" {

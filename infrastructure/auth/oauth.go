@@ -57,20 +57,23 @@ type OAuth2Settings struct {
 
 // LoadCredentials hydrates the settings from a Google credentials file
 // (CredentialsFile / CredentialsJSON) when one is configured; otherwise it is a
-// no-op. It accepts BOTH kinds Google hands out:
+// no-op. It accepts both of the credential JSON types Google issues:
 //
 //   - a service-account key (its type field reads service_account) —
 //     server-to-server: the account impersonates `user` via domain-wide
 //     delegation, so no refresh token is needed. Workspace only (a service
 //     account cannot act for a consumer @gmail.com account).
-//   - a downloaded OAuth client secret ({"web"|"installed":...}) — fills
-//     ClientID / ClientSecret / TokenURL from the file; a RefreshToken (from the
-//     provider's consent flow) is still required to mint tokens.
+//   - a downloaded OAuth client secret ({"web"|"installed":...}) — fills any
+//     UNSET ClientID / ClientSecret / TokenURL from the file (an explicit value
+//     already on the struct wins); a RefreshToken (from the provider's consent
+//     flow) is still required to mint tokens.
 //
 // `user` is the mailbox address (the IMAP/SMTP username) the tokens act for.
-// It is safe to call repeatedly — it rebuilds from the current
-// CredentialsFile/JSON each time, so a runtime reconfiguration (config.set)
-// re-reads the new credentials.
+// It is safe to call repeatedly — it re-reads the current CredentialsFile/JSON
+// each call (a service account rebuilds its token source; an OAuth client fills
+// unset fields), so a runtime reconfiguration (config.set) that points at a new
+// file takes effect. config.set clears the old client fields before re-loading
+// so a changed file is fully honoured.
 func (o *OAuth2Settings) LoadCredentials(ctx context.Context, user string) error {
 	raw := o.CredentialsJSON
 	if len(raw) == 0 {
@@ -132,7 +135,7 @@ func (o *OAuth2Settings) Token(ctx context.Context) (string, error) {
 			ClientSecret: o.ClientSecret,
 			Endpoint:     oauth2.Endpoint{TokenURL: o.TokenURL},
 		}
-		o.source = cfg.TokenSource(context.Background(), &oauth2.Token{RefreshToken: o.RefreshToken})
+		o.source = cfg.TokenSource(ctx, &oauth2.Token{RefreshToken: o.RefreshToken})
 	}
 	if o.source != nil {
 		tok, err := o.source.Token()

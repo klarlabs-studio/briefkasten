@@ -205,3 +205,46 @@ func TestConfigSetSwapsSender(t *testing.T) {
 		t.Errorf("live smtp addr = %q", cfg.Outbox.SMTP.Addr)
 	}
 }
+
+// TestConfigSetReconfiguresToDifferentCredentials guards the stale-credentials
+// regression: pointing config.set at a NEW credentials file must adopt the new
+// client identity, not keep the previous file's client_id.
+func TestConfigSetReconfiguresToDifferentCredentials(t *testing.T) {
+	dir := t.TempDir()
+	writeClient := func(name, clientID string) string {
+		p := filepath.Join(dir, name)
+		j := `{"web":{"client_id":"` + clientID + `","client_secret":"x","token_uri":"https://oauth2.googleapis.com/token","auth_uri":"https://accounts.google.com/o/oauth2/auth","redirect_uris":["http://127.0.0.1/cb"]}}`
+		if err := os.WriteFile(p, []byte(j), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	first := writeClient("a.json", "client-a.apps.googleusercontent.com")
+	second := writeClient("b.json", "client-b.apps.googleusercontent.com")
+
+	cfg, _ := LoadConfig("")
+	cfg.RuntimeConfig = true
+	cfg.Maildir = newRootDir(t)
+	client := newConfigClient(t, cfg)
+
+	base := map[string]any{"addr": "imap.gmail.com:993", "username": "you@gmail.com"}
+	set := func(file string) {
+		imap := map[string]any{}
+		for k, v := range base {
+			imap[k] = v
+		}
+		imap["oauth2"] = map[string]any{"credentials_file": file, "refresh_token": "rtok"}
+		if got := rootCallMap(t, client, "config.set", map[string]any{"backend": "imap", "imap": imap}); got["ok"] != true {
+			t.Fatalf("config.set(%s) = %v", file, got)
+		}
+	}
+
+	set(first)
+	if cfg.IMAP.OAuth2.ClientID != "client-a.apps.googleusercontent.com" {
+		t.Fatalf("first client_id = %q", cfg.IMAP.OAuth2.ClientID)
+	}
+	set(second)
+	if cfg.IMAP.OAuth2.ClientID != "client-b.apps.googleusercontent.com" {
+		t.Errorf("after reconfig, client_id = %q, want client-b (stale-credentials regression)", cfg.IMAP.OAuth2.ClientID)
+	}
+}
