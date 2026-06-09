@@ -241,10 +241,9 @@ func (c *Config) BuildWatcher() Watcher {
 	case "maildir":
 		return NewDirWatcher(c.Maildir)
 	case "imap":
-		if c.IMAP.OAuth2 != nil {
-			// Best-effort: a credentials error surfaces clearly at dial time.
-			_ = c.IMAP.OAuth2.LoadCredentials(context.Background(), c.IMAP.Username)
-		}
+		// OAuth2 credentials are hydrated by BuildMailbox, which runs first and
+		// shares the same *OAuth2Settings — no separate (error-swallowing) load
+		// here.
 		return NewIMAPWatcher(IMAPConfig{
 			Addr:     c.IMAP.Addr,
 			Username: c.IMAP.Username,

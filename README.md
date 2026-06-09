@@ -142,8 +142,8 @@ flow — the OAuth 2.0 Playground works). The same block applies to
 #### Google credentials file
 
 Instead of hand-copying the OAuth fields, point Briefkasten at a downloaded
-Google credentials JSON with `credentials_file`. Both kinds Google issues are
-accepted:
+Google credentials JSON with `credentials_file`. Both of the credential JSON
+types Google issues are accepted:
 
 ```yaml
 imap:
