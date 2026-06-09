@@ -4,14 +4,21 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 
 	"github.com/emersion/go-sasl"
 	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 )
+
+// gmailScope is the full IMAP/SMTP access scope Google requires for
+// XOAUTH2-authenticated mail (read and send).
+const gmailScope = "https://mail.google.com/"
 
 // OAuth2Settings configures token-based IMAP/SMTP authentication —
 // Gmail and Outlook are phasing out app passwords; XOAUTH2/OAUTHBEARER
@@ -36,18 +43,93 @@ type OAuth2Settings struct {
 	// Outlook) or "oauthbearer" (RFC 7628).
 	Mechanism string `yaml:"mechanism"`
 
+	// CredentialsFile points at a downloaded Google credentials JSON —
+	// either a service-account key or an OAuth client secret (see
+	// LoadCredentials). It saves hand-copying client_id/client_secret/token_url,
+	// and a service-account key needs no refresh token at all.
+	CredentialsFile string `yaml:"credentials_file"`
+	// CredentialsJSON is the raw credentials bytes, an alternative to the file
+	// (e.g. read from a secret manager). Not serialized.
+	CredentialsJSON []byte `yaml:"-"`
+
 	source oauth2.TokenSource
+	loaded bool // LoadCredentials ran (idempotency guard)
+}
+
+// LoadCredentials hydrates the settings from a Google credentials file
+// (CredentialsFile / CredentialsJSON) when one is configured; otherwise it is a
+// no-op. It accepts BOTH kinds Google hands out:
+//
+//   - a service-account key (its type field reads service_account) —
+//     server-to-server: the account impersonates `user` via domain-wide
+//     delegation, so no refresh token is needed. Workspace only (a service
+//     account cannot act for a consumer @gmail.com account).
+//   - a downloaded OAuth client secret ({"web"|"installed":...}) — fills
+//     ClientID / ClientSecret / TokenURL from the file; a RefreshToken (from the
+//     provider's consent flow) is still required to mint tokens.
+//
+// `user` is the mailbox address (the IMAP/SMTP username) the tokens act for.
+func (o *OAuth2Settings) LoadCredentials(ctx context.Context, user string) error {
+	if o.loaded {
+		return nil
+	}
+	raw := o.CredentialsJSON
+	if len(raw) == 0 {
+		if o.CredentialsFile == "" {
+			o.loaded = true
+			return nil
+		}
+		b, err := os.ReadFile(o.CredentialsFile) // #nosec G304 -- path is operator-supplied config
+		if err != nil {
+			return fmt.Errorf("oauth2: read credentials file: %w", err)
+		}
+		raw = b
+	}
+	var probe struct {
+		Type      string          `json:"type"`
+		Web       json.RawMessage `json:"web"`
+		Installed json.RawMessage `json:"installed"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return fmt.Errorf("oauth2: parse credentials file: %w", err)
+	}
+	switch {
+	case probe.Type == "service_account":
+		if user == "" {
+			return errors.New("oauth2: a service-account credentials file requires a username to impersonate")
+		}
+		jwtCfg, err := google.JWTConfigFromJSON(raw, gmailScope)
+		if err != nil {
+			return fmt.Errorf("oauth2: parse service-account key: %w", err)
+		}
+		jwtCfg.Subject = user // domain-wide delegation impersonation
+		o.source = jwtCfg.TokenSource(ctx)
+	case len(probe.Web) > 0 || len(probe.Installed) > 0:
+		cfg, err := google.ConfigFromJSON(raw, gmailScope)
+		if err != nil {
+			return fmt.Errorf("oauth2: parse OAuth client secret: %w", err)
+		}
+		if o.ClientID == "" {
+			o.ClientID = cfg.ClientID
+		}
+		if o.ClientSecret == "" {
+			o.ClientSecret = cfg.ClientSecret
+		}
+		if o.TokenURL == "" {
+			o.TokenURL = cfg.Endpoint.TokenURL
+		}
+	default:
+		return errors.New("oauth2: unrecognised credentials file (want a service-account key or an OAuth client secret)")
+	}
+	o.loaded = true
+	return nil
 }
 
 // Token returns a current access token, refreshing as needed.
 func (o *OAuth2Settings) Token(ctx context.Context) (string, error) {
-	if o.AccessToken != "" && o.RefreshToken == "" {
-		return o.AccessToken, nil
-	}
-	if o.RefreshToken == "" {
-		return "", errors.New("oauth2: access_token or refresh_token required")
-	}
-	if o.source == nil {
+	// A credentials-file-built source (service account) wins: it needs no
+	// refresh token.
+	if o.source == nil && o.RefreshToken != "" {
 		cfg := &oauth2.Config{
 			ClientID:     o.ClientID,
 			ClientSecret: o.ClientSecret,
@@ -55,11 +137,17 @@ func (o *OAuth2Settings) Token(ctx context.Context) (string, error) {
 		}
 		o.source = cfg.TokenSource(context.Background(), &oauth2.Token{RefreshToken: o.RefreshToken})
 	}
-	tok, err := o.source.Token()
-	if err != nil {
-		return "", fmt.Errorf("oauth2: token: %w", err)
+	if o.source != nil {
+		tok, err := o.source.Token()
+		if err != nil {
+			return "", fmt.Errorf("oauth2: token: %w", err)
+		}
+		return tok.AccessToken, nil
 	}
-	return tok.AccessToken, nil
+	if o.AccessToken != "" {
+		return o.AccessToken, nil
+	}
+	return "", errors.New("oauth2: access_token, refresh_token, or a credentials file required")
 }
 
 // SASLClient builds the SASL client for the configured mechanism.

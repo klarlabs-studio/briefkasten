@@ -139,6 +139,35 @@ token. Obtain the refresh token once via your provider's consent flow
 flow — the OAuth 2.0 Playground works). The same block applies to
 `outbox.smtp.oauth2` for sending.
 
+#### Google credentials file
+
+Instead of hand-copying the OAuth fields, point Briefkasten at a downloaded
+Google credentials JSON with `credentials_file`. Both kinds Google issues are
+accepted:
+
+```yaml
+imap:
+  addr: imap.gmail.com:993
+  username: you@gmail.com
+  oauth2:
+    credentials_file: /run/secrets/google.json
+    refresh_token: "<refresh token>"   # only for an OAuth client secret
+```
+
+- **OAuth client secret** (the `client_secret_*.json` downloaded from Cloud
+  Console, `{"web":…}` or `{"installed":…}`) — fills `client_id`,
+  `client_secret`, and `token_url` from the file. You still supply a
+  `refresh_token` (from the consent flow).
+- **Service-account key** (`type: service_account`) — server-to-server: the
+  account impersonates `username` via domain-wide delegation, so **no refresh
+  token is needed**. Workspace only — a service account cannot act for a
+  consumer `@gmail.com` account, and delegation for the `https://mail.google.com/`
+  scope must be granted in the Workspace admin console.
+
+The file can also be supplied via environment:
+`BRIEFKASTEN_IMAP_OAUTH2_CREDENTIALS_FILE` and
+`BRIEFKASTEN_SMTP_OAUTH2_CREDENTIALS_FILE`.
+
 ### Multiple accounts
 
 ```yaml

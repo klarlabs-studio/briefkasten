@@ -196,3 +196,18 @@ imap:
 		t.Errorf("oauth2 = %+v", o)
 	}
 }
+
+// TestApplyEnvCredentialsFile allocates the OAuth2 block and sets the
+// credentials-file path from the env var.
+func TestApplyEnvCredentialsFile(t *testing.T) {
+	cfg := &briefkasten.Config{}
+	t.Setenv("BRIEFKASTEN_IMAP_OAUTH2_CREDENTIALS_FILE", "/run/secrets/google.json")
+	t.Setenv("BRIEFKASTEN_SMTP_OAUTH2_CREDENTIALS_FILE", "/run/secrets/google.json")
+	cfg.ApplyEnv()
+	if cfg.IMAP.OAuth2 == nil || cfg.IMAP.OAuth2.CredentialsFile != "/run/secrets/google.json" {
+		t.Errorf("imap oauth2 credentials file not set: %+v", cfg.IMAP.OAuth2)
+	}
+	if cfg.Outbox.SMTP.OAuth2 == nil || cfg.Outbox.SMTP.OAuth2.CredentialsFile != "/run/secrets/google.json" {
+		t.Errorf("smtp oauth2 credentials file not set: %+v", cfg.Outbox.SMTP.OAuth2)
+	}
+}

@@ -1,6 +1,7 @@
 package briefkasten
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -158,9 +159,26 @@ func (c *Config) ApplyEnv() {
 	if v := os.Getenv("BRIEFKASTEN_SMTP_INSECURE"); v != "" {
 		c.Outbox.SMTP.Insecure = v == "1" || v == "true"
 	}
+	// Google credentials file (service-account key or OAuth client secret) for
+	// IMAP and SMTP OAuth2. Setting it allocates the OAuth2 block if absent.
+	overlayCredentialsFile(&c.IMAP.OAuth2, "BRIEFKASTEN_IMAP_OAUTH2_CREDENTIALS_FILE")
+	overlayCredentialsFile(&c.Outbox.SMTP.OAuth2, "BRIEFKASTEN_SMTP_OAUTH2_CREDENTIALS_FILE")
 	if v := os.Getenv("BRIEFKASTEN_RUNTIME_CONFIG"); v != "" {
 		c.RuntimeConfig = v == "1" || v == "true"
 	}
+}
+
+// overlayCredentialsFile sets the OAuth2 credentials-file path from an env var,
+// allocating the OAuth2 settings block when it is not already present.
+func overlayCredentialsFile(o **OAuth2Settings, key string) {
+	v := os.Getenv(key)
+	if v == "" {
+		return
+	}
+	if *o == nil {
+		*o = &OAuth2Settings{}
+	}
+	(*o).CredentialsFile = v
 }
 
 func overlay(dst *string, key string) {
@@ -192,6 +210,11 @@ func (c *Config) BuildMailbox() (Mailbox, string, error) {
 		}
 		return mb, "maildir " + c.Maildir, nil
 	case "imap":
+		if c.IMAP.OAuth2 != nil {
+			if err := c.IMAP.OAuth2.LoadCredentials(context.Background(), c.IMAP.Username); err != nil {
+				return nil, "", fmt.Errorf("config: imap oauth2: %w", err)
+			}
+		}
 		mb, err := NewIMAPMailbox(IMAPConfig{
 			Addr:     c.IMAP.Addr,
 			Username: c.IMAP.Username,
@@ -218,6 +241,10 @@ func (c *Config) BuildWatcher() Watcher {
 	case "maildir":
 		return NewDirWatcher(c.Maildir)
 	case "imap":
+		if c.IMAP.OAuth2 != nil {
+			// Best-effort: a credentials error surfaces clearly at dial time.
+			_ = c.IMAP.OAuth2.LoadCredentials(context.Background(), c.IMAP.Username)
+		}
 		return NewIMAPWatcher(IMAPConfig{
 			Addr:     c.IMAP.Addr,
 			Username: c.IMAP.Username,
@@ -244,6 +271,11 @@ func (c *Config) BuildOutbox() (*Outbox, string, error) {
 		err    error
 	)
 	if c.Outbox.SMTP.Addr != "" {
+		if c.Outbox.SMTP.OAuth2 != nil {
+			if err := c.Outbox.SMTP.OAuth2.LoadCredentials(context.Background(), c.Outbox.SMTP.Username); err != nil {
+				return nil, "", fmt.Errorf("config: smtp oauth2: %w", err)
+			}
+		}
 		sender, err = NewSMTPSender(SMTPConfig{
 			Addr:        c.Outbox.SMTP.Addr,
 			From:        c.Outbox.From,
