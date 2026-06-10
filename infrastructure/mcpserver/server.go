@@ -82,9 +82,9 @@ func registerTools(srv *mcp.Server, svc *application.Service) {
 		UIResource(InboxUIResourceURI).
 		OutputSchema(map[string]any{"ids": []string{"m1.eml"}, "total": 1}).
 		Handler(func(_ context.Context, in struct {
-			Folder  string `json:"folder,omitempty"`
-			Account string `json:"account,omitempty"`
-			Limit   int    `json:"limit,omitempty"`
+			Folder  string `json:"folder,omitempty" jsonschema:"description=Folder to list; defaults to the inbox (see email://folders)"`
+			Account string `json:"account,omitempty" jsonschema:"description=Named account; defaults to the primary (see email://accounts)"`
+			Limit   int    `json:"limit,omitempty" jsonschema:"description=Cap the ids returned; total always reports the full count"`
 		},
 		) (map[string]any, error) {
 			ids, err := svc.ListUnread(in.Account, in.Folder)
@@ -103,9 +103,9 @@ func registerTools(srv *mcp.Server, svc *application.Service) {
 		ReadOnly().
 		OutputSchema(map[string]any{"raw": "<base64>"}).
 		Handler(func(_ context.Context, in struct {
-			ID      string `json:"id"`
-			Folder  string `json:"folder,omitempty"`
-			Account string `json:"account,omitempty"`
+			ID      string `json:"id" jsonschema:"required,description=Unread message id from email.list_unread"`
+			Folder  string `json:"folder,omitempty" jsonschema:"description=Folder holding the message; defaults to the inbox"`
+			Account string `json:"account,omitempty" jsonschema:"description=Named account; defaults to the primary"`
 		},
 		) (map[string]any, error) {
 			raw, err := svc.Read(in.Account, in.Folder, in.ID)
@@ -120,9 +120,9 @@ func registerTools(srv *mcp.Server, svc *application.Service) {
 		Idempotent().
 		OutputSchema(map[string]any{"ok": true}).
 		Handler(func(_ context.Context, in struct {
-			ID      string `json:"id"`
-			Folder  string `json:"folder,omitempty"`
-			Account string `json:"account,omitempty"`
+			ID      string `json:"id" jsonschema:"required,description=Message id to acknowledge; only mark after processing succeeded"`
+			Folder  string `json:"folder,omitempty" jsonschema:"description=Folder holding the message; defaults to the inbox"`
+			Account string `json:"account,omitempty" jsonschema:"description=Named account; defaults to the primary"`
 		},
 		) (map[string]any, error) {
 			if err := svc.MarkSeen(in.Account, in.Folder, in.ID); err != nil {
@@ -136,10 +136,10 @@ func registerTools(srv *mcp.Server, svc *application.Service) {
 		ReadOnly().
 		OutputSchema(map[string]any{"ids": []string{"m1.eml"}, "total": 1}).
 		Handler(func(_ context.Context, in struct {
-			Query   string `json:"query"`
-			Folder  string `json:"folder,omitempty"`
-			Account string `json:"account,omitempty"`
-			Limit   int    `json:"limit,omitempty"`
+			Query   string `json:"query" jsonschema:"required,description=Text to find in unread messages (case-insensitive)"`
+			Folder  string `json:"folder,omitempty" jsonschema:"description=Folder to search; defaults to the inbox"`
+			Account string `json:"account,omitempty" jsonschema:"description=Named account; defaults to the primary"`
+			Limit   int    `json:"limit,omitempty" jsonschema:"description=Cap the ids returned; total always reports the full count"`
 		},
 		) (map[string]any, error) {
 			ids, err := svc.Search(in.Account, in.Folder, in.Query)
@@ -183,10 +183,10 @@ func confirmCuration(ctx context.Context, confirmed bool, action, id string) err
 
 func registerCurateTools(srv *mcp.Server, svc *application.Service) {
 	type curateInput struct {
-		ID      string `json:"id"`
-		Folder  string `json:"folder,omitempty"`
-		Account string `json:"account,omitempty"`
-		Confirm bool   `json:"confirm,omitempty"`
+		ID      string `json:"id" jsonschema:"required,description=Unread message id from email.list_unread"`
+		Folder  string `json:"folder,omitempty" jsonschema:"description=Folder holding the message; defaults to the inbox"`
+		Account string `json:"account,omitempty" jsonschema:"description=Named account; defaults to the primary"`
+		Confirm bool   `json:"confirm,omitempty" jsonschema:"description=Set true only after the user explicitly approved this action"`
 	}
 
 	srv.Tool("email.archive").
@@ -223,11 +223,11 @@ func registerSendTools(srv *mcp.Server, ob *application.Outbox) {
 		Description("Queue an outbound email. Optionally include an html_body (sent as an alternative to body) and attachments (each with filename, content_type, and base64-encoded content; max 10 MiB per attachment, 25 MiB per message). Returns the outbox id; delivery is asynchronous — poll email.send_status.").
 		OutputSchema(map[string]any{"id": "abc123", "state": "queued"}).
 		Handler(func(_ context.Context, in struct {
-			To          []string            `json:"to"`
-			Subject     string              `json:"subject"`
-			Body        string              `json:"body"`
-			HTMLBody    string              `json:"html_body,omitempty"`
-			Attachments []domain.Attachment `json:"attachments,omitempty"`
+			To          []string            `json:"to" jsonschema:"required,description=Recipient addresses (RFC 5322; e.g. a@b.c or Alice <a@b.c>)"`
+			Subject     string              `json:"subject" jsonschema:"required,description=Subject line"`
+			Body        string              `json:"body" jsonschema:"required,description=Plain-text body"`
+			HTMLBody    string              `json:"html_body,omitempty" jsonschema:"description=HTML alternative; sent alongside body as multipart/alternative"`
+			Attachments []domain.Attachment `json:"attachments,omitempty" jsonschema:"description=Files to attach; content is base64; max 10 MiB each and 25 MiB per message"`
 		},
 		) (map[string]any, error) {
 			id, err := ob.Enqueue(domain.OutboundMessage{
@@ -249,7 +249,7 @@ func registerSendTools(srv *mcp.Server, ob *application.Outbox) {
 		UIResource(InboxUIResourceURI).
 		OutputSchema(map[string]any{"id": "abc123", "state": "sent", "attempts": 1}).
 		Handler(func(_ context.Context, in struct {
-			ID string `json:"id"`
+			ID string `json:"id" jsonschema:"required,description=Outbox id returned by email.send"`
 		},
 		) (map[string]any, error) {
 			msg, err := ob.Status(in.ID)
@@ -268,7 +268,7 @@ func registerSendTools(srv *mcp.Server, ob *application.Outbox) {
 		Idempotent().
 		OutputSchema(map[string]any{"id": "abc123", "state": "queued"}).
 		Handler(func(_ context.Context, in struct {
-			ID string `json:"id"`
+			ID string `json:"id" jsonschema:"required,description=Outbox id of a failed message (see email.send_status)"`
 		},
 		) (map[string]any, error) {
 			if err := ob.Retry(in.ID); err != nil {

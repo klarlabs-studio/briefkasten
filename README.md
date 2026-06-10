@@ -30,7 +30,7 @@ Beyond tools, the full MCP surface:
 
 | Surface | What |
 |---|---|
-| Resources | `email://inbox`, `email://inbox/{id}` (raw RFC 5322), `email://outbox`, `email://outbox/{id}`, `email://folders`, `email://accounts` — read state without spending tool calls; `{id}` completes from live unread ids |
+| Resources | `email://inbox`, `email://inbox/{id}` (raw RFC 5322), `email://inbox/{id}/headers` (parsed from/to/subject/date/message_id — triage without fetching the body), `email://outbox`, `email://outbox/{id}`, `email://folders`, `email://accounts` — read state without spending tool calls; `{id}` completes from live unread ids |
 | Prompts | `summarize_inbox(count?)` (embeds up to `count` unread messages, default 20, each truncated at 16 KiB), `draft_reply(id)` (embeds the original, truncated at 16 KiB) |
 | Annotations | read tools are `readOnlyHint`, `mark_seen` is `idempotentHint`, `config.set` is `destructiveHint` |
 | Instructions | the consumption contract (mark seen only after successful processing) ships as server instructions |

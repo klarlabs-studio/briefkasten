@@ -1,8 +1,11 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"mime"
+	"net/mail"
 	"strings"
 
 	mcp "go.klarlabs.de/mcp"
@@ -36,6 +39,18 @@ func registerResources(srv *mcp.Server, svc *application.Service, ob *applicatio
 				return nil, err
 			}
 			return &server.ResourceContent{URI: uri, MimeType: "message/rfc822", Text: string(raw)}, nil
+		})
+
+	srv.Resource("email://inbox/{id}/headers").
+		Name("Inbox message headers").
+		Description("Parsed headers (from, to, subject, date, message_id) by unread id — triage without fetching the full message.").
+		MimeType("application/json").
+		Handler(func(_ context.Context, uri string, params map[string]string) (*server.ResourceContent, error) {
+			raw, err := svc.Read("", "", params["id"])
+			if err != nil {
+				return nil, err
+			}
+			return jsonResource(uri, parseHeaders(raw))
 		})
 
 	srv.ResourceCompletion("email://inbox/{id}").
@@ -102,6 +117,30 @@ func registerResources(srv *mcp.Server, svc *application.Service, ob *applicatio
 			}
 			return jsonResource(uri, msg)
 		})
+}
+
+// parseHeaders extracts the triage-relevant headers from a raw RFC 5322
+// message. Best-effort: an unparsable message yields empty fields rather
+// than an error — the raw resource stays available either way.
+func parseHeaders(raw []byte) map[string]any {
+	out := map[string]any{"from": "", "to": "", "subject": "", "date": "", "message_id": ""}
+	msg, err := mail.ReadMessage(bytes.NewReader(raw))
+	if err != nil {
+		return out
+	}
+	dec := mime.WordDecoder{}
+	decode := func(v string) string {
+		if d, err := dec.DecodeHeader(v); err == nil {
+			return d
+		}
+		return v
+	}
+	out["from"] = decode(msg.Header.Get("From"))
+	out["to"] = decode(msg.Header.Get("To"))
+	out["subject"] = decode(msg.Header.Get("Subject"))
+	out["date"] = msg.Header.Get("Date")
+	out["message_id"] = msg.Header.Get("Message-Id")
+	return out
 }
 
 func jsonResource(uri string, payload any) (*server.ResourceContent, error) {
