@@ -10,7 +10,7 @@ require (
 	github.com/klarlabs-studio/auth-go v0.3.0
 	go.klarlabs.de/bolt v1.5.2
 	go.klarlabs.de/fortify v1.8.1
-	go.klarlabs.de/mcp v1.21.0
+	go.klarlabs.de/mcp v1.22.0
 	go.klarlabs.de/statekit v1.8.0
 	golang.org/x/oauth2 v0.36.0
 	gopkg.in/yaml.v3 v3.0.1
