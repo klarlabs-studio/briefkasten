@@ -63,6 +63,12 @@ type Config struct {
 	// path remembers where the config was loaded from so runtime changes
 	// can be persisted back. Empty when no file was used.
 	path string
+	// envSecrets records which secrets came from the environment rather
+	// than the file, so Save can leave them where the operator put them.
+	// Keeping a password in BRIEFKASTEN_IMAP_PASSWORD is a deliberate
+	// choice; writing it to disk on the first config.set would quietly
+	// undo it and leak the secret into backups and version control.
+	envSecrets map[string]bool
 }
 
 // AuthSettings guards the MCP HTTP endpoint with basic auth. Every
@@ -208,13 +214,46 @@ func LoadConfig(path string) (*Config, error) {
 // or "" when no file was used.
 func (c *Config) Path() string { return c.path }
 
-// Save writes the configuration back to the file it was loaded from.
-// It fails when the configuration did not come from a file.
+// forSave returns the copy of the configuration that goes to disk:
+// identical to the live one except that secrets the operator kept
+// elsewhere are left out.
+//
+// Two sources are elided. Secrets read from BRIEFKASTEN_* variables stay
+// in the environment — persisting them would silently convert a
+// 12-factor deployment into one with passwords on disk. And OAuth2
+// fields hydrated from a credentials file stay in that file, which is
+// the whole reason credentials_file exists; they are re-read on the next
+// load, so nothing is lost.
+//
+// A value the operator wrote in the file, or set deliberately through
+// config.set, is untouched and still persists.
+func (c *Config) forSave() *Config {
+	out := *c
+	if c.envSecrets["BRIEFKASTEN_IMAP_PASSWORD"] {
+		out.IMAP.Password = ""
+	}
+	if c.envSecrets["BRIEFKASTEN_SMTP_PASSWORD"] {
+		out.Outbox.SMTP.Password = ""
+	}
+	if c.envSecrets["BRIEFKASTEN_AUTH_PASSWORD"] {
+		out.Auth.Basic.Password = ""
+	}
+	if c.envSecrets["BRIEFKASTEN_AUTH_PASSWORD_HASH"] {
+		out.Auth.Basic.PasswordHash = ""
+	}
+	out.IMAP.OAuth2 = c.IMAP.OAuth2.WithoutHydrated()
+	out.Outbox.SMTP.OAuth2 = c.Outbox.SMTP.OAuth2.WithoutHydrated()
+	return &out
+}
+
+// Save writes the configuration back to the file it was loaded from,
+// minus the secrets forSave elides. It fails when the configuration did
+// not come from a file.
 func (c *Config) Save() error {
 	if c.path == "" {
 		return fmt.Errorf("config: no config file to save to")
 	}
-	raw, err := yaml.Marshal(c)
+	raw, err := yaml.Marshal(c.forSave())
 	if err != nil {
 		return fmt.Errorf("config: marshal: %w", err)
 	}
@@ -233,7 +272,7 @@ func (c *Config) ApplyEnv() {
 	overlay(&c.Maildir, "BRIEFKASTEN_MAILDIR")
 	overlay(&c.IMAP.Addr, "BRIEFKASTEN_IMAP_ADDR")
 	overlay(&c.IMAP.Username, "BRIEFKASTEN_IMAP_USER")
-	overlay(&c.IMAP.Password, "BRIEFKASTEN_IMAP_PASSWORD")
+	c.overlaySecret(&c.IMAP.Password, "BRIEFKASTEN_IMAP_PASSWORD")
 	overlay(&c.IMAP.Mailbox, "BRIEFKASTEN_IMAP_MAILBOX")
 	if v := os.Getenv("BRIEFKASTEN_IMAP_INSECURE"); v != "" {
 		c.IMAP.Insecure = v == "1" || v == "true"
@@ -243,7 +282,7 @@ func (c *Config) ApplyEnv() {
 	overlay(&c.Outbox.DeliverDir, "BRIEFKASTEN_OUTBOX_DELIVER_DIR")
 	overlay(&c.Outbox.SMTP.Addr, "BRIEFKASTEN_SMTP_ADDR")
 	overlay(&c.Outbox.SMTP.Username, "BRIEFKASTEN_SMTP_USER")
-	overlay(&c.Outbox.SMTP.Password, "BRIEFKASTEN_SMTP_PASSWORD")
+	c.overlaySecret(&c.Outbox.SMTP.Password, "BRIEFKASTEN_SMTP_PASSWORD")
 	if v := os.Getenv("BRIEFKASTEN_SMTP_INSECURE"); v != "" {
 		c.Outbox.SMTP.Insecure = v == "1" || v == "true"
 	}
@@ -255,8 +294,8 @@ func (c *Config) ApplyEnv() {
 		c.RuntimeConfig = v == "1" || v == "true"
 	}
 	overlay(&c.Auth.Basic.Username, "BRIEFKASTEN_AUTH_USER")
-	overlay(&c.Auth.Basic.Password, "BRIEFKASTEN_AUTH_PASSWORD")
-	overlay(&c.Auth.Basic.PasswordHash, "BRIEFKASTEN_AUTH_PASSWORD_HASH")
+	c.overlaySecret(&c.Auth.Basic.Password, "BRIEFKASTEN_AUTH_PASSWORD")
+	c.overlaySecret(&c.Auth.Basic.PasswordHash, "BRIEFKASTEN_AUTH_PASSWORD_HASH")
 }
 
 // overlayCredentialsFile sets the OAuth2 credentials-file path from an env var,
@@ -270,6 +309,20 @@ func overlayCredentialsFile(o **OAuth2Settings, key string) {
 		*o = &OAuth2Settings{}
 	}
 	(*o).CredentialsFile = v
+}
+
+// overlaySecret is overlay for values that must not be written back to
+// the config file. It records the source so Save can omit the field.
+func (c *Config) overlaySecret(dst *string, key string) {
+	v := os.Getenv(key)
+	if v == "" {
+		return
+	}
+	*dst = v
+	if c.envSecrets == nil {
+		c.envSecrets = map[string]bool{}
+	}
+	c.envSecrets[key] = true
 }
 
 func overlay(dst *string, key string) {

@@ -163,6 +163,15 @@ Every key has an env override: `BRIEFKASTEN_TRANSPORT`, `BRIEFKASTEN_ADDR`, `BRI
 `BRIEFKASTEN_MAILDIR`, `BRIEFKASTEN_IMAP_ADDR` / `_USER` / `_PASSWORD` /
 `_MAILBOX` / `_INSECURE`, `BRIEFKASTEN_RUNTIME_CONFIG`.
 
+**Secrets stay where you put them.** `config.set` rewrites the config file, but a
+password supplied through `BRIEFKASTEN_IMAP_PASSWORD`, `BRIEFKASTEN_SMTP_PASSWORD`,
+`BRIEFKASTEN_AUTH_PASSWORD`, or `BRIEFKASTEN_AUTH_PASSWORD_HASH` is never written
+to it — keeping credentials in the environment is a deliberate choice, and
+persisting them would undo it silently. The same holds for `client_id` /
+`client_secret` / `token_url` read from an OAuth2 `credentials_file`: they live in
+that file and are re-read on each load, so they are not copied into the config
+file either. Values you write in the file yourself are untouched and still persist.
+
 ### Endpoint auth
 
 The MCP endpoint is open by default — fine on localhost. Before exposing

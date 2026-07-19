@@ -52,7 +52,36 @@ type OAuth2Settings struct {
 	// (e.g. read from a secret manager). Not serialized.
 	CredentialsJSON []byte `yaml:"-"`
 
+	// hydrated marks the fields LoadCredentials filled from the
+	// credentials file. They belong to that file, not to the config file,
+	// so WithoutHydrated drops them before the configuration is written
+	// back to disk.
+	hydrated struct{ clientID, clientSecret, tokenURL bool }
+
 	source oauth2.TokenSource
+}
+
+// WithoutHydrated returns a copy for serialization with the fields
+// LoadCredentials filled from the credentials file cleared. The next
+// load re-reads them from that file, so the configuration still works;
+// what changes is that the client secret is no longer duplicated into
+// the config file. Values the operator wrote explicitly were never
+// marked hydrated and survive. A nil receiver returns nil.
+func (o *OAuth2Settings) WithoutHydrated() *OAuth2Settings {
+	if o == nil {
+		return nil
+	}
+	out := *o
+	if o.hydrated.clientID {
+		out.ClientID = ""
+	}
+	if o.hydrated.clientSecret {
+		out.ClientSecret = ""
+	}
+	if o.hydrated.tokenURL {
+		out.TokenURL = ""
+	}
+	return &out
 }
 
 // LoadCredentials hydrates the settings from a Google credentials file
@@ -110,14 +139,18 @@ func (o *OAuth2Settings) LoadCredentials(ctx context.Context, user string) error
 		if err != nil {
 			return fmt.Errorf("oauth2: parse OAuth client secret: %w", err)
 		}
+		// Only blanks are filled, so an explicit value in the config file
+		// still wins. What is filled here is marked as hydrated: it lives
+		// in the credentials file, and must not be copied into the config
+		// file when the configuration is saved.
 		if o.ClientID == "" {
-			o.ClientID = cfg.ClientID
+			o.ClientID, o.hydrated.clientID = cfg.ClientID, true
 		}
 		if o.ClientSecret == "" {
-			o.ClientSecret = cfg.ClientSecret
+			o.ClientSecret, o.hydrated.clientSecret = cfg.ClientSecret, true
 		}
 		if o.TokenURL == "" {
-			o.TokenURL = cfg.Endpoint.TokenURL
+			o.TokenURL, o.hydrated.tokenURL = cfg.Endpoint.TokenURL, true
 		}
 	default:
 		return errors.New("oauth2: unrecognised credentials file (want a service-account key or an OAuth client secret)")
