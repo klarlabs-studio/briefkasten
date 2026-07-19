@@ -49,11 +49,22 @@ func (s *Service) Resolve(account, folder string) (domain.Mailbox, error) {
 
 // ListUnread returns the unread ids of the resolved mailbox.
 func (s *Service) ListUnread(account, folder string) ([]string, error) {
+	return s.List(account, folder, domain.ScopeUnread)
+}
+
+// List returns the ids of the resolved mailbox within scope: the unread
+// backlog, the already-read mail, or both. An empty scope means unread,
+// so callers that predate scopes are unaffected.
+func (s *Service) List(account, folder string, scope domain.Scope) ([]string, error) {
+	scope, err := domain.ParseScope(string(scope))
+	if err != nil {
+		return nil, err
+	}
 	box, err := s.Resolve(account, folder)
 	if err != nil {
 		return nil, err
 	}
-	ids, err := box.ListUnread()
+	ids, err := listMailbox(box, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -84,11 +95,20 @@ func (s *Service) MarkSeen(account, folder, id string) error {
 // Search finds unread messages matching the query. Backends with a
 // Searcher search natively; everything else gets the scan fallback.
 func (s *Service) Search(account, folder, query string) ([]string, error) {
+	return s.SearchScope(account, folder, query, domain.ScopeUnread)
+}
+
+// SearchScope finds messages within scope matching the query.
+func (s *Service) SearchScope(account, folder, query string, scope domain.Scope) ([]string, error) {
+	scope, err := domain.ParseScope(string(scope))
+	if err != nil {
+		return nil, err
+	}
 	box, err := s.Resolve(account, folder)
 	if err != nil {
 		return nil, err
 	}
-	ids, err := searchMailbox(box, query)
+	ids, err := searchMailbox(box, scope, query)
 	if err != nil {
 		return nil, err
 	}
@@ -152,13 +172,29 @@ func (s *Service) curator(account, folder string) (domain.Curator, error) {
 	return cu, nil
 }
 
-// searchMailbox searches via the backend's Searcher when available,
-// otherwise falls back to scanning the unread backlog.
-func searchMailbox(mb domain.Mailbox, query string) ([]string, error) {
-	if s, ok := mb.(domain.Searcher); ok {
+// listMailbox lists via the backend's ScopedMailbox when available. A
+// backend without it can only speak for the unread backlog, so a wider
+// scope fails loudly instead of quietly returning unread mail.
+func listMailbox(mb domain.Mailbox, scope domain.Scope) ([]string, error) {
+	if sm, ok := mb.(domain.ScopedMailbox); ok {
+		return sm.List(scope)
+	}
+	if scope != domain.ScopeUnread {
+		return nil, fmt.Errorf("briefkasten: backend lists unread mail only, scope %q unsupported", string(scope))
+	}
+	return mb.ListUnread()
+}
+
+// searchMailbox searches via the backend's ScopedSearcher or Searcher
+// when available, otherwise falls back to scanning the scope's ids.
+func searchMailbox(mb domain.Mailbox, scope domain.Scope, query string) ([]string, error) {
+	if s, ok := mb.(domain.ScopedSearcher); ok {
+		return s.SearchScope(scope, query)
+	}
+	if s, ok := mb.(domain.Searcher); ok && scope == domain.ScopeUnread {
 		return s.Search(query)
 	}
-	ids, err := mb.ListUnread()
+	ids, err := listMailbox(mb, scope)
 	if err != nil {
 		return nil, err
 	}

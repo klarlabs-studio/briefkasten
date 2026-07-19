@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -102,10 +103,24 @@ func (r *Mailbox) MarkSeen(id string) error {
 	return err
 }
 
+// List lists a scope through the resilience pipeline.
+func (r *Mailbox) List(scope domain.Scope) ([]string, error) {
+	v, err := r.execute(func() (any, error) { return listFallback(r.mb, scope) })
+	if err != nil {
+		return nil, err
+	}
+	return v.([]string), nil
+}
+
 // Search forwards to the wrapped backend's domain.Searcher (or the generic
 // fallback), guarded by the same resilience pipeline.
 func (r *Mailbox) Search(query string) ([]string, error) {
-	v, err := r.execute(func() (any, error) { return searchFallback(r.mb, query) })
+	return r.SearchScope(domain.ScopeUnread, query)
+}
+
+// SearchScope searches within a scope through the resilience pipeline.
+func (r *Mailbox) SearchScope(scope domain.Scope, query string) ([]string, error) {
+	v, err := r.execute(func() (any, error) { return searchFallback(r.mb, scope, query) })
 	if err != nil {
 		return nil, err
 	}
@@ -162,19 +177,36 @@ func (r *Mailbox) Delete(id string) error {
 }
 
 var (
-	_ domain.Mailbox       = (*Mailbox)(nil)
-	_ domain.Searcher      = (*Mailbox)(nil)
-	_ domain.FolderMailbox = (*Mailbox)(nil)
-	_ domain.Curator       = (*Mailbox)(nil)
+	_ domain.Mailbox        = (*Mailbox)(nil)
+	_ domain.ScopedMailbox  = (*Mailbox)(nil)
+	_ domain.Searcher       = (*Mailbox)(nil)
+	_ domain.ScopedSearcher = (*Mailbox)(nil)
+	_ domain.FolderMailbox  = (*Mailbox)(nil)
+	_ domain.Curator        = (*Mailbox)(nil)
 )
+
+// listFallback mirrors the application-layer scoped-list fallback for
+// the resilience pipeline.
+func listFallback(mb domain.Mailbox, scope domain.Scope) ([]string, error) {
+	if sm, ok := mb.(domain.ScopedMailbox); ok {
+		return sm.List(scope)
+	}
+	if scope != domain.ScopeUnread {
+		return nil, fmt.Errorf("briefkasten: backend lists unread mail only, scope %q unsupported", string(scope))
+	}
+	return mb.ListUnread()
+}
 
 // searchFallback mirrors the application-layer search fallback for the
 // resilience pipeline.
-func searchFallback(mb domain.Mailbox, query string) ([]string, error) {
-	if s, ok := mb.(domain.Searcher); ok {
+func searchFallback(mb domain.Mailbox, scope domain.Scope, query string) ([]string, error) {
+	if s, ok := mb.(domain.ScopedSearcher); ok {
+		return s.SearchScope(scope, query)
+	}
+	if s, ok := mb.(domain.Searcher); ok && scope == domain.ScopeUnread {
 		return s.Search(query)
 	}
-	ids, err := mb.ListUnread()
+	ids, err := listFallback(mb, scope)
 	if err != nil {
 		return nil, err
 	}

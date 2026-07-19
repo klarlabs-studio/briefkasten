@@ -45,7 +45,7 @@ func TestMainVersionCommand(t *testing.T) {
 
 func TestServeConfigLoadError(t *testing.T) {
 	t.Setenv("BRIEFKASTEN_CONFIG", "/no/such/briefkasten.yaml")
-	if code := serve(); code != 1 {
+	if code := serve(nil); code != 1 {
 		t.Errorf("serve with missing config = %d, want 1", code)
 	}
 }
@@ -56,7 +56,7 @@ func TestServeMailboxInitError(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("BRIEFKASTEN_CONFIG", cfgPath)
-	if code := serve(); code != 1 {
+	if code := serve(nil); code != 1 {
 		t.Errorf("serve with unknown backend = %d, want 1", code)
 	}
 }
@@ -70,7 +70,7 @@ func TestServeListenError(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("BRIEFKASTEN_CONFIG", cfgPath)
-	if code := serve(); code != 1 {
+	if code := serve(nil); code != 1 {
 		t.Errorf("serve with unlistenable addr = %d, want 1", code)
 	}
 }
@@ -122,7 +122,7 @@ func TestServeGracefulShutdown(t *testing.T) {
 	}
 
 	done := make(chan int, 1)
-	go func() { done <- serve() }()
+	go func() { done <- serve(nil) }()
 
 	// Wait until the server accepts connections.
 	deadline := time.Now().Add(10 * time.Second)

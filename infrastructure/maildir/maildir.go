@@ -32,14 +32,40 @@ func New(root string) (*Mailbox, error) {
 }
 
 // ListUnread returns message ids (filenames) in new/, in stable order.
-func (m *Mailbox) ListUnread() ([]string, error) {
-	entries, err := os.ReadDir(filepath.Join(m.root, "new"))
-	if err != nil {
-		return nil, fmt.Errorf("briefkasten: list: %w", err)
+func (m *Mailbox) ListUnread() ([]string, error) { return m.List(domain.ScopeUnread) }
+
+// List returns message ids for the scope, in stable order: new/ for
+// unread, cur/ for read, and the union of both for all.
+func (m *Mailbox) List(scope domain.Scope) ([]string, error) {
+	var subs []string
+	switch scope {
+	case domain.ScopeUnread:
+		subs = []string{"new"}
+	case domain.ScopeRead:
+		subs = []string{"cur"}
+	case domain.ScopeAll:
+		subs = []string{"new", "cur"}
+	default:
+		return nil, fmt.Errorf("%w: %q", domain.ErrBadScope, string(scope))
 	}
-	ids := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if !e.IsDir() {
+
+	seen := make(map[string]struct{})
+	ids := []string{}
+	for _, sub := range subs {
+		entries, err := os.ReadDir(filepath.Join(m.root, sub))
+		if err != nil {
+			return nil, fmt.Errorf("briefkasten: list: %w", err)
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			// A message that was marked seen mid-listing can appear in
+			// both dirs; report it once.
+			if _, dup := seen[e.Name()]; dup {
+				continue
+			}
+			seen[e.Name()] = struct{}{}
 			ids = append(ids, e.Name())
 		}
 	}
@@ -47,17 +73,27 @@ func (m *Mailbox) ListUnread() ([]string, error) {
 	return ids, nil
 }
 
-// Fetch returns the raw message bytes for an unread id.
+var _ domain.ScopedMailbox = (*Mailbox)(nil)
+
+// Fetch returns the raw message bytes for an id, unread (new/) or
+// already read (cur/). Reading never moves the message, so fetching a
+// seen message leaves it seen and an unread one unread.
 func (m *Mailbox) Fetch(id string) ([]byte, error) {
-	path, err := m.safePath("new", id)
-	if err != nil {
-		return nil, err
+	var firstErr error
+	for _, sub := range []string{"new", "cur"} {
+		path, err := m.safePath(sub, id)
+		if err != nil {
+			return nil, err
+		}
+		data, err := os.ReadFile(path) // #nosec G304 -- path built by safePath, which rejects ids that escape the mailbox
+		if err == nil {
+			return data, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
 	}
-	data, err := os.ReadFile(path) // #nosec G304 -- path built by safePath, which rejects ids that escape the mailbox
-	if err != nil {
-		return nil, fmt.Errorf("briefkasten: fetch %q: %w", id, err)
-	}
-	return data, nil
+	return nil, fmt.Errorf("briefkasten: fetch %q: %w", id, firstErr)
 }
 
 // MarkSeen moves a message from new/ to cur/.
@@ -76,6 +112,26 @@ func (m *Mailbox) MarkSeen(id string) error {
 	return nil
 }
 
+// locate resolves an id to its on-disk path, preferring the unread
+// backlog (new/) and falling back to read mail (cur/).
+func (m *Mailbox) locate(id string) (string, error) {
+	newPath, err := m.safePath("new", id)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(newPath); err == nil {
+		return newPath, nil
+	}
+	curPath, err := m.safePath("cur", id)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(curPath); err == nil {
+		return curPath, nil
+	}
+	return "", fmt.Errorf("%w: %q", domain.ErrBadID, id)
+}
+
 // safePath joins root/sub/id, rejecting ids that escape the mailbox.
 func (m *Mailbox) safePath(sub, id string) (string, error) {
 	if id == "" || id != filepath.Base(id) || strings.HasPrefix(id, ".") {
@@ -86,7 +142,13 @@ func (m *Mailbox) safePath(sub, id string) (string, error) {
 
 // Search scans the unread backlog for a case-insensitive substring match.
 func (d *Mailbox) Search(query string) ([]string, error) {
-	ids, err := d.ListUnread()
+	return d.SearchScope(domain.ScopeUnread, query)
+}
+
+// SearchScope scans the scope's messages for a case-insensitive
+// substring match.
+func (d *Mailbox) SearchScope(scope domain.Scope, query string) ([]string, error) {
+	ids, err := d.List(scope)
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +166,10 @@ func (d *Mailbox) Search(query string) ([]string, error) {
 	return out, nil
 }
 
-var _ domain.Searcher = (*Mailbox)(nil)
+var (
+	_ domain.Searcher       = (*Mailbox)(nil)
+	_ domain.ScopedSearcher = (*Mailbox)(nil)
+)
 
 // Folders lists the root maildir ("INBOX") plus every subdirectory that
 // looks like a maildir (contains new/).
@@ -140,9 +205,10 @@ func (d *Mailbox) InFolder(name string) (domain.Mailbox, error) {
 
 var _ domain.FolderMailbox = (*Mailbox)(nil)
 
-// moveTo relocates an unread message into a hidden sub-maildir.
+// moveTo relocates a message into a hidden sub-maildir. Read messages
+// (cur/) curate just like unread ones (new/).
 func (d *Mailbox) moveTo(sub, id string) error {
-	from, err := d.safePath("new", id)
+	from, err := d.locate(id)
 	if err != nil {
 		return err
 	}

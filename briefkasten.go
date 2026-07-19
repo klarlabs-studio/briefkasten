@@ -29,16 +29,30 @@ import (
 //nolint:revive // grouped aliases share one doc comment by design
 type (
 	Mailbox         = domain.Mailbox
+	ScopedMailbox   = domain.ScopedMailbox
 	Searcher        = domain.Searcher
+	ScopedSearcher  = domain.ScopedSearcher
 	FolderMailbox   = domain.FolderMailbox
 	Curator         = domain.Curator
 	Sender          = domain.Sender
 	OutboundMessage = domain.OutboundMessage
 	Attachment      = domain.Attachment
+	// Scope selects which slice of a mailbox a listing covers.
+	Scope = domain.Scope
+)
+
+// Listing scopes, re-exported for consumers.
+const (
+	ScopeUnread = domain.ScopeUnread
+	ScopeRead   = domain.ScopeRead
+	ScopeAll    = domain.ScopeAll
 )
 
 // ErrBadID rejects message ids that try to escape the mailbox.
 var ErrBadID = domain.ErrBadID
+
+// ErrBadScope rejects listing scopes outside unread/read/all.
+var ErrBadScope = domain.ErrBadScope
 
 // Application types.
 type (
