@@ -164,7 +164,7 @@ async function refresh() {
     }
   } catch (e) {
     status.textContent = '';
-    list.innerHTML = '<p class="error">' + e.message + '</p>';
+    list.replaceChildren(Object.assign(document.createElement('p'), { className: 'error', textContent: e.message }));
   }
 }
 
