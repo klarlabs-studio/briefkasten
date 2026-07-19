@@ -16,7 +16,11 @@ import (
 // 12-factor precedence: environment variables override the config file,
 // which overrides defaults.
 type Config struct {
-	// Addr is the MCP listen address.
+	// Transport selects how the MCP server is exposed: "http" (default,
+	// listens on Addr) or "stdio" (JSON-RPC over stdin/stdout, for
+	// clients that spawn the binary as a child process).
+	Transport string `yaml:"transport"`
+	// Addr is the MCP listen address. Ignored when Transport is "stdio".
 	Addr string `yaml:"addr"`
 	// Backend selects the mailbox backend: "maildir" or "imap". When empty,
 	// "imap" is inferred if IMAP.Addr is set, "maildir" otherwise.
@@ -169,6 +173,7 @@ func (c *Config) Save() error {
 // ApplyEnv overlays BRIEFKASTEN_* environment variables onto the
 // configuration. Unset variables leave existing values untouched.
 func (c *Config) ApplyEnv() {
+	overlay(&c.Transport, "BRIEFKASTEN_TRANSPORT")
 	overlay(&c.Addr, "BRIEFKASTEN_ADDR")
 	overlay(&c.Backend, "BRIEFKASTEN_BACKEND")
 	overlay(&c.Maildir, "BRIEFKASTEN_MAILDIR")
@@ -217,6 +222,52 @@ func overlay(dst *string, key string) {
 	if v := os.Getenv(key); v != "" {
 		*dst = v
 	}
+}
+
+// Transport names. HTTP is the default; stdio serves JSON-RPC over
+// stdin/stdout for clients that spawn the binary directly.
+const (
+	TransportHTTP  = "http"
+	TransportStdio = "stdio"
+)
+
+// ResolvedTransport returns the effective transport: the explicit
+// Transport value, or "http" when unset.
+func (c *Config) ResolvedTransport() string {
+	if c.Transport == "" {
+		return TransportHTTP
+	}
+	return c.Transport
+}
+
+// ValidateTransport rejects transports the server cannot serve, so a
+// typo fails at startup rather than silently falling back to HTTP.
+func (c *Config) ValidateTransport() error {
+	switch c.ResolvedTransport() {
+	case TransportHTTP, TransportStdio:
+		return nil
+	default:
+		return fmt.Errorf("config: unknown transport %q (want %q or %q)",
+			c.Transport, TransportHTTP, TransportStdio)
+	}
+}
+
+// LogWriterName reports which standard stream the server must log to.
+// Stdio uses stdout for the JSON-RPC framing, so diagnostics have to go
+// to stderr or they corrupt the protocol stream.
+func (c *Config) LogWriterName() string {
+	if c.ResolvedTransport() == TransportStdio {
+		return "stderr"
+	}
+	return "stdout"
+}
+
+// LogWriter returns the stream matching LogWriterName.
+func (c *Config) LogWriter() *os.File {
+	if c.LogWriterName() == "stderr" {
+		return os.Stderr
+	}
+	return os.Stdout
 }
 
 // ResolvedBackend returns the effective backend name: the explicit Backend

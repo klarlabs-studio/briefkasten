@@ -46,6 +46,46 @@ go install go.klarlabs.de/briefkasten/cmd/briefkasten@latest
 BRIEFKASTEN_ADDR=:8090 BRIEFKASTEN_MAILDIR=./maildir briefkasten   # serve (default)
 ```
 
+Or install the release build:
+
+```bash
+brew install klarlabs-studio/tap/briefkasten
+```
+
+### Transports
+
+Briefkasten serves MCP over HTTP by default. Clients that spawn the
+server as a child process — Claude Desktop, Claude Code, and most local
+MCP hosts — want stdio instead:
+
+```bash
+briefkasten serve --stdio --config /path/to/briefkasten.yaml
+```
+
+Equivalently `transport: stdio` in the config file, or
+`BRIEFKASTEN_TRANSPORT=stdio`. Precedence is flag > env > file.
+
+On stdio the protocol owns stdout, so logs go to stderr instead. Basic
+auth is an HTTP concern and is ignored (with a warning) — over stdio the
+peer is the process that spawned the server.
+
+Wiring it into a host that reads `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "briefkasten": {
+      "command": "/opt/homebrew/bin/briefkasten",
+      "args": ["serve", "--stdio", "--config", "/absolute/path/briefkasten.yaml"]
+    }
+  }
+}
+```
+
+Pass `--config` as an absolute path: a spawned server does not inherit a
+predictable working directory, so the bare `./briefkasten.yaml` lookup
+will not find the file.
+
 ## CLI
 
 The same binary is a human client over the same mailbox:
@@ -84,6 +124,7 @@ Three layers, 12-factor precedence — **env > config file > defaults**:
 
 ```yaml
 # briefkasten.yaml (or point BRIEFKASTEN_CONFIG elsewhere)
+transport: http          # or stdio; http listens on addr, stdio uses stdin/stdout
 addr: ":8090"
 backend: imap            # or maildir; inferred from imap.addr when omitted
 maildir: ./maildir
@@ -95,7 +136,7 @@ imap:
 runtime_config: false    # enable config.get / config.set MCP tools
 ```
 
-Every key has an env override: `BRIEFKASTEN_ADDR`, `BRIEFKASTEN_BACKEND`,
+Every key has an env override: `BRIEFKASTEN_TRANSPORT`, `BRIEFKASTEN_ADDR`, `BRIEFKASTEN_BACKEND`,
 `BRIEFKASTEN_MAILDIR`, `BRIEFKASTEN_IMAP_ADDR` / `_USER` / `_PASSWORD` /
 `_MAILBOX` / `_INSECURE`, `BRIEFKASTEN_RUNTIME_CONFIG`.
 

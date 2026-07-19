@@ -3,7 +3,11 @@
 //
 // Server (default):
 //
-//	briefkasten [serve]
+//	briefkasten [serve] [--stdio] [--config FILE]
+//
+// The server speaks MCP over HTTP by default; --stdio (or
+// transport: stdio / BRIEFKASTEN_TRANSPORT=stdio) serves JSON-RPC over
+// stdin/stdout for hosts that spawn the binary as a child process.
 //
 // Human commands:
 //
@@ -24,6 +28,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -53,15 +58,53 @@ func main() {
 
 func contextTODO() context.Context { return context.Background() }
 
-// serve runs the MCP server (the pre-CLI default behavior).
-func serve() int {
-	log := bolt.New(bolt.NewJSONHandler(os.Stdout))
+// serveOptions are the flags accepted by the serve command.
+type serveOptions struct {
+	configPath string
+	stdio      bool
+}
 
-	cfg, err := loadConfigPath("")
+// parseServeFlags parses the serve command's flags. --stdio is a
+// shorthand for transport: stdio, so clients that spawn the binary can
+// select it without a config file or environment variable.
+func parseServeFlags(args []string) (serveOptions, error) {
+	var opts serveOptions
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	fs.StringVar(&opts.configPath, "config", "", "config file (default: $BRIEFKASTEN_CONFIG or ./briefkasten.yaml)")
+	fs.BoolVar(&opts.stdio, "stdio", false, "serve MCP over stdin/stdout instead of HTTP")
+	if err := fs.Parse(args); err != nil {
+		return serveOptions{}, err
+	}
+	return opts, nil
+}
+
+// serve runs the MCP server (the pre-CLI default behavior).
+func serve(args []string) int {
+	// Bootstrap logger on stderr: the transport is not known until the
+	// config is read, and stdio mode must never write to stdout.
+	log := bolt.New(bolt.NewJSONHandler(os.Stderr))
+
+	opts, err := parseServeFlags(args)
+	if err != nil {
+		return 2
+	}
+
+	cfg, err := loadConfigPath(opts.configPath)
 	if err != nil {
 		log.Error().Err(err).Msg("config load failed")
 		return 1
 	}
+	// The flag is the most explicit signal, so it wins over file and env.
+	if opts.stdio {
+		cfg.Transport = briefkasten.TransportStdio
+	}
+	if err := cfg.ValidateTransport(); err != nil {
+		log.Error().Err(err).Msg("transport invalid")
+		return 1
+	}
+	// HTTP keeps logging to stdout as before; stdio stays on stderr.
+	log = bolt.New(bolt.NewJSONHandler(cfg.LogWriter()))
 
 	srv, outbox, err := briefkasten.NewConfigServer(cfg)
 	if err != nil {
@@ -114,20 +157,31 @@ func serve() int {
 		return 1
 	}
 
-	log.Info().
-		Str("addr", cfg.Addr).
+	transport := cfg.ResolvedTransport()
+	entry := log.Info().
+		Str("transport", transport).
 		Str("backend", cfg.ResolvedBackend()).
 		Str("config_file", cfg.Path()).
 		Bool("runtime_config", cfg.RuntimeConfig).
-		Bool("outbox", outbox != nil).
-		Bool("auth", authMW != nil).
-		Msg("briefkasten listening")
-	if authMW != nil {
-		err = mcp.ServeHTTPWithMiddleware(ctx, srv, cfg.Addr,
-			[]mcp.HTTPOption{briefkasten.ForwardAuthorizationHeader()},
-			mcp.WithMiddleware(authMW))
+		Bool("outbox", outbox != nil)
+
+	if transport == briefkasten.TransportStdio {
+		// Basic auth guards an HTTP endpoint; over stdio the peer is the
+		// process that spawned us, so there is no credential to check.
+		if authMW != nil {
+			log.Warn().Msg("auth configured but ignored on stdio transport")
+		}
+		entry.Msg("briefkasten serving on stdio")
+		err = mcp.ServeStdio(ctx, srv)
 	} else {
-		err = mcp.ServeHTTP(ctx, srv, cfg.Addr)
+		entry.Str("addr", cfg.Addr).Bool("auth", authMW != nil).Msg("briefkasten listening")
+		if authMW != nil {
+			err = mcp.ServeHTTPWithMiddleware(ctx, srv, cfg.Addr,
+				[]mcp.HTTPOption{briefkasten.ForwardAuthorizationHeader()},
+				mcp.WithMiddleware(authMW))
+		} else {
+			err = mcp.ServeHTTP(ctx, srv, cfg.Addr)
+		}
 	}
 	if err != nil && ctx.Err() == nil {
 		log.Error().Err(err).Msg("serve failed")

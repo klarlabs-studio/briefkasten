@@ -38,7 +38,7 @@ func TestServeWithBasicAuth(t *testing.T) {
 	t.Setenv("BRIEFKASTEN_CONFIG", cfgPath)
 
 	done := make(chan int, 1)
-	go func() { done <- serve() }()
+	go func() { done <- serve(nil) }()
 
 	deadline := time.Now().Add(10 * time.Second)
 	for {

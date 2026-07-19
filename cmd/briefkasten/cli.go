@@ -20,8 +20,11 @@ import (
 // run dispatches the CLI. Empty args or "serve" starts the MCP server;
 // everything else is a human command over the configured mailbox.
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	if len(args) == 0 || args[0] == "serve" {
-		return serve()
+	if len(args) == 0 {
+		return serve(nil)
+	}
+	if args[0] == "serve" {
+		return serve(args[1:])
 	}
 
 	cmd, rest := args[0], args[1:]
@@ -261,6 +264,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, `unknown command %q
 
 usage: briefkasten [serve|list|read|seen|search|folders|send|retry|outbox|archive|delete|hashpw]
+
+serve [--stdio] [--config FILE]   MCP server; --stdio serves over stdin/stdout
+                                  instead of HTTP, for hosts that spawn it.
 
 Curation is soft: archive files away, delete moves to trash — nothing is
 ever expunged. Both prompt for confirmation unless --yes.
