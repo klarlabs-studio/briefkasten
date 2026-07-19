@@ -1,0 +1,67 @@
+---
+updated: 2026-07-19
+tags: [architecture]
+---
+# Briefkasten architecture
+
+Hexagonal, with the dependency arrow pointing inward at `domain/`.
+
+## Layers
+
+- **`domain/`** — ports and invariants. Imports no infrastructure. `Mailbox` is
+  the core port (`ListUnread`, `Fetch`, `MarkSeen`); optional capabilities are
+  separate interfaces a backend may implement: `ScopedMailbox`, `Searcher`,
+  `ScopedSearcher`, `FolderMailbox`, `Curator`. Outbound lives here too
+  (`OutboundMessage`, `Sender`, validation).
+- **`application/`** — use cases. The single code path every interface shares:
+  the MCP tools and the CLI both call `Service`. Confirmation of destructive
+  operations is an *interface* concern; the use cases run after approval.
+- **`infrastructure/`** — adapters: `maildir` (local-first), `imap` (go-imap v2),
+  `smtp`, `auth` (SASL XOAUTH2/OAUTHBEARER + basic auth), `resilience` (fortify
+  timeout/retry/circuit-breaker), `mcpserver` (MCP presentation + embedded Apps UI).
+- **root package** — composition: `Config`, `NewConfigServer`, runtime
+  reconfiguration tools, re-exported domain types for consumers.
+
+## Load-bearing invariants
+
+- **Nothing is ever destroyed.** Archive and delete are soft moves. IMAP uses
+  COPY + `\Seen`, deliberately not MOVE, because MOVE expunges the source.
+- **Reading never mutates.** IMAP fetches `BODY.PEEK[]`; the maildir backend
+  reads files in place. This is what makes `scope=read`/`all` safe — looking at
+  processed mail cannot disturb the unread backlog.
+- **Capabilities degrade loudly, not silently.** A backend that cannot tell read
+  from unread errors on a wider scope rather than returning unread ids. See
+  `listMailbox` / `searchMailbox` in `application/service.go`.
+- **Decorators forward capabilities.** `application.Switchable` (runtime backend
+  swap) and `infrastructure/resilience.Mailbox` both re-implement every optional
+  interface. Adding a domain capability means updating both, or it silently
+  disappears behind a decorator.
+
+## Security model
+
+Message content is untrusted input. It is embedded verbatim into the
+`summarize_inbox` and `draft_reply` prompts, so anything reachable from a tool is
+reachable from a crafted email.
+
+- Every mutating tool gates on human confirmation via
+  `mcpserver.ConfirmAction` — MCP elicitation, or an explicit `confirm=true`.
+  That is `email.send`, `email.archive`, `email.delete`, and `config.set`.
+  `ConfirmAction` is exported so the root package's runtime tools use the same
+  gate rather than a parallel one.
+- **Credentials are bound to their endpoint.** `config.set` is a partial update;
+  changing `addr` clears inherited credentials. Otherwise a caller who does not
+  know the password could choose where it is sent.
+- **TLS is one-way at runtime** — `insecure` can be turned off, never on.
+- **Profiles vs field-level patches.** A profile may point anywhere; a field-level
+  patch is confined to the startup maildir subtree. The asymmetry is deliberate:
+  trust comes from *who wrote the destination*, not from where it points.
+- **Secrets stay at their source.** `Config.forSave` elides env-sourced passwords
+  and OAuth2 values hydrated from a `credentials_file`, tracked at the point they
+  were read rather than guessed at save time.
+
+## Interfaces
+
+Two surfaces, one use-case layer: MCP (`infrastructure/mcpserver`) and CLI
+(`cmd/briefkasten`). Transport is HTTP or stdio. The MCP Apps UI
+(`ui://briefkasten/inbox`) is an embedded self-contained HTML page served as a
+resource — all dynamic values reach the DOM through `textContent`.
