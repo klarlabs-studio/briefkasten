@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"mime"
 	"net/mail"
 	"strings"
 )
@@ -58,6 +59,21 @@ func ValidateAddress(addr string) error {
 	return nil
 }
 
+// ValidateContentType rejects attachment content types that are not a
+// single well-formed MIME type. The value is written verbatim into a
+// part header, so CR/LF would let a caller forge additional headers and
+// a whole extra MIME part — the same header-injection door
+// ValidateAddress closes for From/To.
+func ValidateContentType(ctype string) error {
+	if strings.ContainsAny(ctype, "\r\n") {
+		return fmt.Errorf("outbox: content type %q contains line breaks", ctype)
+	}
+	if _, _, err := mime.ParseMediaType(ctype); err != nil {
+		return fmt.Errorf("outbox: invalid content type %q: %w", ctype, err)
+	}
+	return nil
+}
+
 // Validate enforces the message invariants.
 func (m OutboundMessage) Validate() error {
 	if len(m.To) == 0 {
@@ -79,6 +95,9 @@ func (m OutboundMessage) Validate() error {
 			return fmt.Errorf("outbox: attachment %q is empty", a.Filename)
 		case len(a.Content) > MaxAttachmentBytes:
 			return fmt.Errorf("outbox: attachment %q is %d bytes, over the %d limit", a.Filename, len(a.Content), MaxAttachmentBytes)
+		}
+		if err := ValidateContentType(a.ContentType); err != nil {
+			return fmt.Errorf("outbox: attachment %q: %w", a.Filename, err)
 		}
 		total += len(a.Content)
 	}

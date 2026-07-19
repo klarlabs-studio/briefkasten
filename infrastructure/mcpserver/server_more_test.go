@@ -71,7 +71,7 @@ func TestRetryToolRequeuesFailedSend(t *testing.T) {
 	client, _ := newClient(t, WithOutbox(ob))
 
 	sent := callMap(t, client, "email.send", map[string]any{
-		"to": []string{"x@y.z"}, "subject": "s", "body": "b",
+		"to": []string{"x@y.z"}, "subject": "s", "body": "b", "confirm": true,
 	})
 	id, _ := sent["id"].(string)
 	if id == "" {
