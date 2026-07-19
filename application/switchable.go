@@ -36,6 +36,11 @@ func (s *Switchable) current() domain.Mailbox {
 // ListUnread lists the current backend's unread ids.
 func (s *Switchable) ListUnread() ([]string, error) { return s.current().ListUnread() }
 
+// List forwards to the backend's ScopedMailbox when it has one.
+func (s *Switchable) List(scope domain.Scope) ([]string, error) {
+	return listMailbox(s.current(), scope)
+}
+
 // Fetch returns the raw message bytes from the current backend.
 func (s *Switchable) Fetch(id string) ([]byte, error) { return s.current().Fetch(id) }
 
@@ -44,7 +49,12 @@ func (s *Switchable) MarkSeen(id string) error { return s.current().MarkSeen(id)
 
 // Search forwards to the backend's Searcher or the generic fallback.
 func (s *Switchable) Search(query string) ([]string, error) {
-	return searchMailbox(s.current(), query)
+	return searchMailbox(s.current(), domain.ScopeUnread, query)
+}
+
+// SearchScope forwards to the backend's ScopedSearcher or the fallback.
+func (s *Switchable) SearchScope(scope domain.Scope, query string) ([]string, error) {
+	return searchMailbox(s.current(), scope, query)
 }
 
 // Folders forwards to the backend when it supports folders.
@@ -85,8 +95,10 @@ func (s *Switchable) Delete(id string) error {
 }
 
 var (
-	_ domain.Mailbox       = (*Switchable)(nil)
-	_ domain.Searcher      = (*Switchable)(nil)
-	_ domain.FolderMailbox = (*Switchable)(nil)
-	_ domain.Curator       = (*Switchable)(nil)
+	_ domain.Mailbox        = (*Switchable)(nil)
+	_ domain.ScopedMailbox  = (*Switchable)(nil)
+	_ domain.Searcher       = (*Switchable)(nil)
+	_ domain.ScopedSearcher = (*Switchable)(nil)
+	_ domain.FolderMailbox  = (*Switchable)(nil)
+	_ domain.Curator        = (*Switchable)(nil)
 )

@@ -38,9 +38,10 @@ type Config struct {
 // connection and logs out afterwards — no connection state is kept, so the
 // mailbox survives server restarts and idle timeouts.
 //
-// ListUnread issues UID SEARCH UNSEEN, Fetch reads BODY.PEEK[] (the \Seen
-// flag is NOT set by fetching), and MarkSeen stores +FLAGS \Seen — seen
-// messages simply stop being listed; nothing is ever deleted.
+// ListUnread issues UID SEARCH UNSEEN, List widens that to SEEN or ALL,
+// Fetch reads BODY.PEEK[] (the \Seen flag is NOT set by fetching), and
+// MarkSeen stores +FLAGS \Seen — seen messages simply stop being listed
+// unread; nothing is ever deleted and no read flag is ever cleared.
 type Mailbox struct {
 	cfg Config
 }
@@ -98,18 +99,46 @@ func closeClient(c *imapclient.Client) {
 }
 
 // ListUnread returns the UIDs of unseen messages.
-func (m *Mailbox) ListUnread() ([]string, error) {
+func (m *Mailbox) ListUnread() ([]string, error) { return m.List(domain.ScopeUnread) }
+
+// List returns the UIDs covered by scope: UID SEARCH UNSEEN, SEEN, or
+// ALL. Listing never touches flags, so a read message stays read.
+func (m *Mailbox) List(scope domain.Scope) ([]string, error) {
+	criteria, err := scopeCriteria(scope)
+	if err != nil {
+		return nil, err
+	}
+	return m.uidSearch(criteria, "search "+string(scope))
+}
+
+var _ domain.ScopedMailbox = (*Mailbox)(nil)
+
+// scopeCriteria translates a scope into IMAP search criteria. ScopeAll
+// searches with no flag restriction, which is IMAP's ALL.
+func scopeCriteria(scope domain.Scope) (*imap.SearchCriteria, error) {
+	switch scope {
+	case domain.ScopeUnread:
+		return &imap.SearchCriteria{NotFlag: []imap.Flag{imap.FlagSeen}}, nil
+	case domain.ScopeRead:
+		return &imap.SearchCriteria{Flag: []imap.Flag{imap.FlagSeen}}, nil
+	case domain.ScopeAll:
+		return &imap.SearchCriteria{}, nil
+	default:
+		return nil, fmt.Errorf("%w: %q", domain.ErrBadScope, string(scope))
+	}
+}
+
+// uidSearch runs a UID SEARCH and renders the UIDs as ids.
+func (m *Mailbox) uidSearch(criteria *imap.SearchCriteria, what string) ([]string, error) {
 	c, err := m.dial()
 	if err != nil {
 		return nil, err
 	}
 	defer closeClient(c)
 
-	data, err := c.UIDSearch(&imap.SearchCriteria{
-		NotFlag: []imap.Flag{imap.FlagSeen},
-	}, nil).Wait()
+	data, err := c.UIDSearch(criteria, nil).Wait()
 	if err != nil {
-		return nil, fmt.Errorf("imap: search unseen: %w", err)
+		return nil, fmt.Errorf("imap: %s: %w", what, err)
 	}
 
 	uids := data.AllUIDs()
@@ -154,28 +183,24 @@ func (m *Mailbox) Fetch(id string) ([]byte, error) {
 
 // Search returns unseen UIDs matching the query (UID SEARCH UNSEEN TEXT).
 func (m *Mailbox) Search(query string) ([]string, error) {
-	c, err := m.dial()
+	return m.SearchScope(domain.ScopeUnread, query)
+}
+
+// SearchScope returns the scope's UIDs matching the query (UID SEARCH
+// <scope> TEXT).
+func (m *Mailbox) SearchScope(scope domain.Scope, query string) ([]string, error) {
+	criteria, err := scopeCriteria(scope)
 	if err != nil {
 		return nil, err
 	}
-	defer closeClient(c)
-
-	data, err := c.UIDSearch(&imap.SearchCriteria{
-		NotFlag: []imap.Flag{imap.FlagSeen},
-		Text:    []string{query},
-	}, nil).Wait()
-	if err != nil {
-		return nil, fmt.Errorf("imap: search: %w", err)
-	}
-	uids := data.AllUIDs()
-	ids := make([]string, len(uids))
-	for i, uid := range uids {
-		ids[i] = strconv.FormatUint(uint64(uid), 10)
-	}
-	return ids, nil
+	criteria.Text = []string{query}
+	return m.uidSearch(criteria, "search")
 }
 
-var _ domain.Searcher = (*Mailbox)(nil)
+var (
+	_ domain.Searcher       = (*Mailbox)(nil)
+	_ domain.ScopedSearcher = (*Mailbox)(nil)
+)
 
 // Folders lists the server's mailboxes (LIST "" "*").
 func (m *Mailbox) Folders() ([]string, error) {

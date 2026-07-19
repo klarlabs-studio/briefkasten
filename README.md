@@ -9,20 +9,38 @@ contract instead of binding to IMAP libraries:
 
 | Tool | Does |
 |---|---|
-| `email.list_unread` | `{"limit?"}` → `{"ids": ["..."], "total": N}` |
-| `email.fetch` | `{"id": "..."}` → `{"raw": "<base64 RFC 5322>"}` |
+| `email.list` | `{"scope?": "unread\|read\|all", "limit?"}` → `{"ids": ["..."], "total": N, "scope": "unread"}` — `scope` defaults to `unread` |
+| `email.list_unread` | `{"limit?"}` → `{"ids": ["..."], "total": N}` — `email.list` with `scope=unread` |
+| `email.fetch` | `{"id": "..."}` → `{"raw": "<base64 RFC 5322>"}` — read or unread; never sets `\Seen` |
 | `email.mark_seen` | `{"id": "..."}` → `{"ok": true}` — message won't be listed again |
 | `email.send`* | `{"to": [...], "subject", "body", "html_body?", "attachments?": [{"filename", "content_type", "content": "<base64>"}]}` → `{"id", "state": "queued"}` — attachments ≤ 10 MiB each, ≤ 25 MiB per message |
 | `email.send_status`* | `{"id"}` → `{"state": "queued\|sending\|sent\|failed", "attempts", "error?"}` |
 | `email.retry`* | `{"id"}` → `{"id", "state": "queued"}` — re-queue a failed send |
-| `email.search` | `{"query", "folder?", "account?", "limit?"}` → `{"ids": [...], "total": N}` — unread scope, case-insensitive; IMAP searches server-side |
+| `email.search` | `{"query", "scope?", "folder?", "account?", "limit?"}` → `{"ids": [...], "total": N, "scope": "unread"}` — case-insensitive; IMAP searches server-side |
 | `email.archive` | `{"id", "confirm?"}` → `{"ok": true}` — **human-confirmed** (elicitation or confirm flag); soft: filed to Archive, never destroyed |
 | `email.delete` | `{"id", "confirm?"}` → `{"ok": true}` — **human-confirmed**; soft delete to Trash, never expunged |
 
-`email.list_unread`, `email.fetch`, `email.mark_seen`, and `email.search`
-accept optional `folder` (see `email://folders`) and `account` (see
-`email://accounts`) arguments. `limit` caps the ids returned; `total`
-always reports the full count.
+`email.list`, `email.list_unread`, `email.fetch`, `email.mark_seen`, and
+`email.search` accept optional `folder` (see `email://folders`) and
+`account` (see `email://accounts`) arguments. `limit` caps the ids
+returned; `total` always reports the full count.
+
+### Scope: read mail, not just unread
+
+`email.list` and `email.search` take a `scope`:
+
+| `scope` | Covers |
+|---|---|
+| `unread` (default) | the ingest backlog — messages not yet marked seen |
+| `read` | messages already marked seen |
+| `all` | the whole mailbox |
+
+Omitting `scope` means `unread`, so existing agents are unaffected.
+Widening it is read-only in every sense: listing and fetching never set
+or clear `\Seen` (IMAP fetches with `BODY.PEEK[]`, the dir backend reads
+the file in place), so looking back at processed mail cannot disturb the
+backlog. A backend that cannot tell read from unread mail rejects a
+wider scope with an error rather than silently returning unread ids.
 
 \* Sending registers only when an outbox is configured.
 
@@ -91,10 +109,10 @@ will not find the file.
 The same binary is a human client over the same mailbox:
 
 ```bash
-briefkasten list   [--folder F] [--account A] [--json]
+briefkasten list   [--scope unread|read|all] [--folder F] [--account A] [--json]
 briefkasten read   <id>
 briefkasten seen   <id>
-briefkasten search <query>
+briefkasten search <query> [--scope unread|read|all]
 briefkasten folders
 briefkasten send   --to a@b.c --subject S --body B [--html '<p>H</p>'] [--attach file.pdf ...]
 briefkasten retry  <id>       # re-queue a failed send and deliver
@@ -299,7 +317,8 @@ BRIEFKASTEN_IMAP_PASSWORD=... \
 briefkasten
 ```
 
-Ids are message UIDs. `email.list_unread` is `UID SEARCH UNSEEN`,
+Ids are message UIDs. `email.list` is `UID SEARCH UNSEEN` / `SEEN` /
+`ALL` depending on `scope`,
 `email.fetch` reads `BODY.PEEK[]` (fetching never sets `\Seen`), and
 `email.mark_seen` stores `+FLAGS \Seen`. Each call dials a fresh
 connection — no state to lose across server restarts or idle timeouts.
