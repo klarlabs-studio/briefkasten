@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 
 	authdomain "github.com/klarlabs-studio/auth-go/domain"
 	mcp "go.klarlabs.de/mcp"
@@ -36,6 +37,16 @@ type Config struct {
 	// the default account. Tools route via their optional account
 	// argument.
 	Accounts map[string]AccountSettings `yaml:"accounts"`
+	// Profiles are whole configurations the operator declares up front,
+	// switchable at runtime by name via config.set {"profile": "..."}.
+	//
+	// A profile is the safe way to move the mailbox somewhere else: the
+	// endpoint and its credentials are written together, by the operator,
+	// in this file. Switching applies them as a unit and inherits nothing
+	// from the live config, so a caller choosing a profile is choosing
+	// among destinations the operator already approved — it can never
+	// name an endpoint of its own.
+	Profiles map[string]ProfileSettings `yaml:"profiles"`
 	// RuntimeConfig enables the config.get / config.set MCP tools that
 	// reconfigure the backend at runtime. Off by default, and hardened
 	// when on: config.set requires human confirmation, credentials never
@@ -114,6 +125,44 @@ type AccountSettings struct {
 	Backend string       `yaml:"backend"`
 	Maildir string       `yaml:"maildir"`
 	IMAP    IMAPSettings `yaml:"imap"`
+}
+
+// ProfileSettings is one named, operator-declared configuration that
+// config.set can activate wholesale. Outbox is optional: a profile that
+// omits it leaves outbound mail as configured.
+type ProfileSettings struct {
+	Backend string          `yaml:"backend"`
+	Maildir string          `yaml:"maildir"`
+	IMAP    IMAPSettings    `yaml:"imap"`
+	Outbox  *OutboxSettings `yaml:"outbox,omitempty"`
+}
+
+// apply returns a copy of c with the profile's mailbox settings
+// substituted wholesale. Nothing carries over from the live mailbox
+// config: the profile names its own endpoint and credentials, so a
+// switch cannot smuggle the current password to a different server.
+// Non-mailbox settings (transport, auth, accounts, profiles) are
+// untouched — a profile switches where mail comes from, not how the
+// server is exposed.
+func (c *Config) applyProfile(p ProfileSettings) Config {
+	next := *c
+	next.Backend = p.Backend
+	next.Maildir = p.Maildir
+	next.IMAP = p.IMAP
+	if p.Outbox != nil {
+		next.Outbox = *p.Outbox
+	}
+	return next
+}
+
+// ProfileNames lists the declared profiles in stable order.
+func (c *Config) ProfileNames() []string {
+	names := make([]string, 0, len(c.Profiles))
+	for name := range c.Profiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // BuildAccounts constructs the named mailboxes.

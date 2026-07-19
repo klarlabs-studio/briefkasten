@@ -216,7 +216,7 @@ func registerConfigTools(srv *mcp.Server, cfg *Config, sw *Switchable, swSender 
 	startupMaildir := cfg.Maildir
 
 	srv.Tool("config.get").
-		Description("Inspect the active mailbox configuration. Credentials are redacted.").
+		Description("Inspect the active mailbox configuration, including the profiles available to config.set. Credentials are redacted.").
 		ReadOnly().
 		Handler(func(_ context.Context, _ struct{}) (map[string]any, error) {
 			mu.Lock()
@@ -232,6 +232,9 @@ func registerConfigTools(srv *mcp.Server, cfg *Config, sw *Switchable, swSender 
 					// password / oauth2 secrets intentionally omitted
 				},
 				"sending": swSender != nil,
+				// The switchable destinations, so a caller can pick one
+				// instead of inventing an endpoint.
+				"profiles": cfg.ProfileNames(),
 			}
 			if cfg.Path() != "" {
 				out["config_file"] = cfg.Path()
@@ -243,6 +246,7 @@ func registerConfigTools(srv *mcp.Server, cfg *Config, sw *Switchable, swSender 
 		Description("Reconfigure the mailbox and outbound sender at runtime — including OAuth2 credentials (oauth2.credentials_file) for Gmail/Outlook. Partial update: omitted fields keep their current values, EXCEPT credentials when addr changes — those must be supplied for the new endpoint (or cleared with clear_credentials). TLS cannot be disabled at runtime and the maildir stays within the startup one. Requires human confirmation — the host is asked via elicitation, or pass confirm=true after asking the user yourself. The new backend and sender are validated before they replace the old ones; when started from a config file the change is persisted there.").
 		Destructive().
 		Handler(func(ctx context.Context, in struct {
+			Profile string       `json:"profile,omitempty" jsonschema:"description=Name of a profile declared in the config file (see config.get); applied wholesale and cannot be combined with the field-level patches"`
 			Backend string       `json:"backend,omitempty"`
 			Maildir string       `json:"maildir,omitempty"`
 			IMAP    *imapPatch   `json:"imap,omitempty"`
@@ -250,6 +254,12 @@ func registerConfigTools(srv *mcp.Server, cfg *Config, sw *Switchable, swSender 
 			Confirm bool         `json:"confirm,omitempty" jsonschema:"description=Set true only after the user explicitly approved reconfiguring the mailbox"`
 		},
 		) (map[string]any, error) {
+			if in.Profile != "" {
+				if in.Backend != "" || in.Maildir != "" || in.IMAP != nil || in.Outbox != nil {
+					return nil, errors.New("briefkasten: profile cannot be combined with field-level settings — a profile is applied whole, so mixing the two would silently drop one of them")
+				}
+				return applyProfile(ctx, in.Profile, in.Confirm, &mu, cfg, sw, swSender)
+			}
 			if err := confirmReconfigure(ctx, in.Confirm, in.Backend, in.Maildir, in.IMAP); err != nil {
 				return nil, err
 			}
@@ -334,41 +344,83 @@ func registerConfigTools(srv *mcp.Server, cfg *Config, sw *Switchable, swSender 
 				}
 			}
 
-			// Validate both the mailbox and (when sending) the sender BEFORE
-			// swapping either — a bad patch leaves the running config untouched.
-			mb, mdesc, err := next.BuildMailbox()
-			if err != nil {
-				return nil, err
-			}
-			var newSender Sender
-			sdesc := ""
-			if swSender != nil && next.Outbox.Dir != "" {
-				newSender, sdesc, err = next.buildSender()
-				if err != nil {
-					return nil, err
-				}
-			}
-
-			*cfg = next
-			sw.Swap(mb)
-			if newSender != nil {
-				swSender.Swap(newSender)
-			}
-
-			result := map[string]any{"ok": true, "backend": mdesc}
-			if sdesc != "" {
-				result["sender"] = sdesc
-			}
-			if cfg.Path() != "" {
-				if err := cfg.Save(); err != nil {
-					result["persisted"] = false
-					result["persist_error"] = err.Error()
-					return result, nil
-				}
-				result["persisted"] = true
-			} else {
-				result["persisted"] = false
-			}
-			return result, nil
+			return commitConfig(&next, cfg, sw, swSender)
 		})
+}
+
+// commitConfig validates the candidate configuration, and only once both
+// the mailbox and (when sending) the sender build does it swap them in.
+// A configuration that cannot be built leaves the running one untouched.
+func commitConfig(next, cfg *Config, sw *Switchable, swSender *SwitchableSender) (map[string]any, error) {
+	mb, mdesc, err := next.BuildMailbox()
+	if err != nil {
+		return nil, err
+	}
+	var newSender Sender
+	sdesc := ""
+	if swSender != nil && next.Outbox.Dir != "" {
+		newSender, sdesc, err = next.buildSender()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	*cfg = *next
+	sw.Swap(mb)
+	if newSender != nil {
+		swSender.Swap(newSender)
+	}
+
+	result := map[string]any{"ok": true, "backend": mdesc}
+	if sdesc != "" {
+		result["sender"] = sdesc
+	}
+	if cfg.Path() != "" {
+		if err := cfg.Save(); err != nil {
+			result["persisted"] = false
+			result["persist_error"] = err.Error()
+			return result, nil
+		}
+		result["persisted"] = true
+	} else {
+		result["persisted"] = false
+	}
+	return result, nil
+}
+
+// applyProfile activates a declared profile by name. Because the profile
+// supplies its own endpoint and credentials from the config file, none
+// of the runtime guards that constrain field-level patches apply here —
+// there is nothing to inherit and no caller-chosen destination. The
+// operator already made this choice; the caller only picks from it.
+func applyProfile(
+	ctx context.Context, name string, confirmed bool, mu *sync.Mutex,
+	cfg *Config, sw *Switchable, swSender *SwitchableSender,
+) (map[string]any, error) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	profile, ok := cfg.Profiles[name]
+	if !ok {
+		known := cfg.ProfileNames()
+		if len(known) == 0 {
+			return nil, fmt.Errorf("briefkasten: unknown profile %q — none are declared in the config file", name)
+		}
+		return nil, fmt.Errorf("briefkasten: unknown profile %q (declared: %s)", name, strings.Join(known, ", "))
+	}
+
+	if err := mcpserver.ConfirmAction(ctx, confirmed,
+		"switch to profile "+name,
+		fmt.Sprintf("Switch the mailbox to profile %q? This changes which mailbox is read and which account sends.", name),
+	); err != nil {
+		return nil, err
+	}
+
+	candidate := cfg.applyProfile(profile)
+	result, err := commitConfig(&candidate, cfg, sw, swSender)
+	if err != nil {
+		return nil, err
+	}
+	result["profile"] = name
+	return result, nil
 }

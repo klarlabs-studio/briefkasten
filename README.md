@@ -114,6 +114,7 @@ briefkasten read   <id>
 briefkasten seen   <id>
 briefkasten search <query> [--scope unread|read|all]
 briefkasten folders
+briefkasten profiles          # names switchable via config.set {"profile": ...}
 briefkasten send   --to a@b.c --subject S --body B [--html '<p>H</p>'] [--attach file.pdf ...]
 briefkasten retry  <id>       # re-queue a failed send and deliver
 briefkasten outbox            # outbound ids by lifecycle state
@@ -152,6 +153,10 @@ imap:
   password: "..."
   mailbox: INBOX
 runtime_config: false    # enable config.get / config.set MCP tools
+profiles:                # named configurations, switchable at runtime
+  personal:
+    backend: maildir
+    maildir: /var/mail/personal
 ```
 
 Every key has an env override: `BRIEFKASTEN_TRANSPORT`, `BRIEFKASTEN_ADDR`, `BRIEFKASTEN_BACKEND`,
@@ -274,8 +279,47 @@ With `runtime_config: true` two extra tools are served:
 
 | Tool | Does |
 |---|---|
-| `config.get` | Active configuration — credentials redacted |
-| `config.set` | Partial patch: validates the new backend **and outbound sender**, hot-swaps them, persists to the config file |
+| `config.get` | Active configuration and the available profiles — credentials redacted |
+| `config.set` | Switch to a declared `profile`, or apply a partial patch: validates the new backend **and outbound sender**, hot-swaps them, persists to the config file |
+
+#### Profiles — the safe way to switch mailboxes
+
+Declare whole configurations up front and switch between them by name:
+
+```yaml
+maildir: /var/mail/work
+runtime_config: true
+profiles:
+  work:
+    backend: maildir
+    maildir: /var/mail/work
+  personal:
+    backend: imap
+    imap:
+      addr: imap.fastmail.com:993
+      username: me@personal.example
+      password: ${BRIEFKASTEN_PERSONAL_PASSWORD}
+    outbox:
+      from: me@personal.example
+      smtp: { addr: smtp.fastmail.com:587, username: me@personal.example }
+```
+
+```jsonc
+{ "profile": "personal", "confirm": true }
+```
+
+A profile is applied **whole** and inherits nothing from the live config — the
+endpoint and its credentials are written together, by you, in this file. That is
+what makes it safe: a caller picking a profile is choosing among destinations you
+already approved, and can never name an endpoint of its own. It is also the only
+way to move the mailbox outside the startup maildir, since field-level patches
+are confined to that subtree.
+
+`briefkasten profiles` lists them from the CLI. Profiles and field-level
+settings cannot be combined in one call — a profile is applied whole, so mixing
+the two would silently drop one.
+
+#### Field-level patches
 
 `config.set` reconfigures **without a restart** — the reading backend and the
 outbound sender are swapped live (the delivery worker keeps running). It patches
@@ -298,8 +342,17 @@ either, including a Google `credentials_file`:
 Patching any `oauth2` field rebuilds the OAuth2 settings from scratch, so a new
 credentials file is re-read and a stale token source is dropped. A failed
 `config.set` leaves the old backend and sender serving — validation happens
-before either swap. Off by default — `config.set` accepts mailbox credentials,
-so enable it only on trusted networks.
+before either swap.
+
+**Guards.** `config.set` requires human confirmation (elicitation, or
+`confirm=true`). Credentials never follow an `addr` change: supply them for the
+new endpoint in the same call, or pass `clear_credentials` to connect without
+any — so a caller who does not know the password cannot choose where it is sent.
+TLS is one-way at runtime (`insecure` can be turned off, never on), and the
+maildir stays inside the one chosen at startup. Use a profile to move further.
+
+Off by default, and worth keeping that way unless you trust the caller: the
+caller may be a model acting on mail content it just read.
 
 The default backend is a maildir-style directory: drop `.eml` files into
 `<maildir>/new` — that's "receiving mail". Consumers fetch and mark seen;

@@ -116,6 +116,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		emit(strings.Join(ids, "\n"), map[string]any{"ids": ids})
 
+	case "profiles":
+		names := cfg.ProfileNames()
+		if len(names) == 0 {
+			fmt.Fprintln(stderr, "profiles: none declared (add a 'profiles:' block to the config file)")
+			return 1
+		}
+		active := cfg.ResolvedBackend()
+		emit(strings.Join(names, "\n"), map[string]any{"profiles": names, "active_backend": active})
+
 	case "folders":
 		folders, err := svc.Folders(*account)
 		if err != nil {
@@ -264,7 +273,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	default:
 		fmt.Fprintf(stderr, `unknown command %q
 
-usage: briefkasten [serve|list|read|seen|search|folders|send|retry|outbox|archive|delete|hashpw]
+usage: briefkasten [serve|list|read|seen|search|folders|profiles|send|retry|outbox|archive|delete|hashpw]
 
 serve [--stdio] [--config FILE]   MCP server; --stdio serves over stdin/stdout
                                   instead of HTTP, for hosts that spawn it.
@@ -308,7 +317,7 @@ func loadConfigPath(explicit string) (*briefkasten.Config, error) {
 
 func needsMailbox(cmd string) bool {
 	switch cmd {
-	case "send", "retry", "outbox", "hashpw":
+	case "send", "retry", "outbox", "hashpw", "profiles":
 		return false
 	default:
 		return true
