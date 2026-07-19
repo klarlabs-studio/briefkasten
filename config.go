@@ -37,8 +37,13 @@ type Config struct {
 	// argument.
 	Accounts map[string]AccountSettings `yaml:"accounts"`
 	// RuntimeConfig enables the config.get / config.set MCP tools that
-	// reconfigure the backend at runtime. Off by default: config.set
-	// accepts mailbox credentials, so only enable it on trusted networks.
+	// reconfigure the backend at runtime. Off by default, and hardened
+	// when on: config.set requires human confirmation, credentials never
+	// follow an addr change (supply them for the new endpoint or pass
+	// clear_credentials), TLS cannot be disabled at runtime, and the
+	// maildir stays inside the one chosen at startup. Those rules matter
+	// because the caller may be a model acting on mail content it just
+	// read — enable this only where that caller is trusted.
 	RuntimeConfig bool `yaml:"runtime_config"`
 	// Auth guards the MCP endpoint. Off by default (open endpoint —
 	// fine on localhost; configure it before exposing the port).

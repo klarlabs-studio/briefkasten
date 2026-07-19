@@ -209,7 +209,7 @@ func scopeOrDefault(scope string) string {
 // message. Curation is reversible — nothing is ever expunged — so the
 // prompt says so.
 func confirmCuration(ctx context.Context, confirmed bool, action, id string) error {
-	return confirmAction(ctx, confirmed,
+	return ConfirmAction(ctx, confirmed,
 		fmt.Sprintf("%s of %q", action, id),
 		fmt.Sprintf("Confirm %s of message %q? The message is moved, never destroyed.", action, id))
 }
@@ -219,15 +219,17 @@ func confirmCuration(ctx context.Context, confirmed bool, action, id string) err
 // the recipients — the detail that matters when the request originated
 // in mail content rather than from the user.
 func confirmSend(ctx context.Context, confirmed bool, to []string, subject string) error {
-	return confirmAction(ctx, confirmed,
+	return ConfirmAction(ctx, confirmed,
 		fmt.Sprintf("send to %s", strings.Join(to, ", ")),
 		fmt.Sprintf("Send email to %s with subject %q? Sending cannot be undone.",
 			strings.Join(to, ", "), subject))
 }
 
-// confirmAction is the shared human-in-the-loop gate: MCP elicitation
-// when the client supports it, an explicit confirm flag otherwise.
-func confirmAction(ctx context.Context, confirmed bool, what, prompt string) error {
+// ConfirmAction is the shared human-in-the-loop gate: MCP elicitation
+// when the client supports it, an explicit confirm flag otherwise. It is
+// exported so the runtime-reconfiguration tools, which live outside this
+// package, gate through the identical path rather than a parallel one.
+func ConfirmAction(ctx context.Context, confirmed bool, what, prompt string) error {
 	if confirmed {
 		return nil
 	}
