@@ -31,6 +31,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	folder := fs.String("folder", "", "folder to operate on (see 'briefkasten folders')")
+	scope := fs.String("scope", "unread", "which messages to list/search: unread, read, or all")
 	account := fs.String("account", "", "named account from the config")
 	asJSON := fs.Bool("json", false, "machine-readable output")
 	yes := fs.Bool("yes", false, "skip confirmation prompts")
@@ -70,7 +71,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	switch cmd {
 	case "list":
-		ids, err := svc.ListUnread(*account, *folder)
+		ids, err := svc.List(*account, *folder, briefkasten.Scope(*scope))
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -108,7 +109,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "usage: briefkasten search <query>")
 			return 2
 		}
-		ids, err := svc.Search(*account, *folder, query)
+		ids, err := svc.SearchScope(*account, *folder, query, briefkasten.Scope(*scope))
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -267,6 +268,9 @@ usage: briefkasten [serve|list|read|seen|search|folders|send|retry|outbox|archiv
 
 serve [--stdio] [--config FILE]   MCP server; --stdio serves over stdin/stdout
                                   instead of HTTP, for hosts that spawn it.
+
+list and search take --scope unread (default), read, or all. Listing and
+reading never change a message's state.
 
 Curation is soft: archive files away, delete moves to trash — nothing is
 ever expunged. Both prompt for confirmation unless --yes.

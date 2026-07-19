@@ -26,9 +26,11 @@ var inboxHTML string
 
 // Instructions is the server guidance shown to AI models.
 const Instructions = `Briefkasten serves a mailbox over MCP. Pull unread mail with
-email.list_unread + email.fetch, then acknowledge each ingested message
+email.list + email.fetch, then acknowledge each ingested message
 with email.mark_seen — only after processing succeeded, so failures stay
-unread for retry. Read state cheaply through the email://inbox and
+unread for retry. To look back at mail already processed, pass
+scope=read (or scope=all) to email.list and email.search; scope defaults
+to unread, and reading never changes a message's state. Read state cheaply through the email://inbox and
 email://outbox resources. Send mail with email.send (asynchronous: poll
 email.send_status). Curate with email.archive / email.delete — both are
 soft moves and require human confirmation: the host is asked via
@@ -91,34 +93,52 @@ func New(svc *application.Service, serverOpts ...Option) *mcp.Server {
 }
 
 func registerTools(srv *mcp.Server, svc *application.Service) {
-	srv.Tool("email.list_unread").
-		Description("List ids of unread messages. Optional: folder (see email://folders), account (see email://accounts), limit (cap the ids returned; total always reports the full count).").
+	type listInput struct {
+		Scope   string `json:"scope,omitempty" jsonschema:"description=Which messages to list: unread (default; the ingest backlog), read (already marked seen), or all,enum=unread,enum=read,enum=all"`
+		Folder  string `json:"folder,omitempty" jsonschema:"description=Folder to list; defaults to the inbox (see email://folders)"`
+		Account string `json:"account,omitempty" jsonschema:"description=Named account; defaults to the primary (see email://accounts)"`
+		Limit   int    `json:"limit,omitempty" jsonschema:"description=Cap the ids returned; total always reports the full count"`
+	}
+
+	list := func(in listInput) (map[string]any, error) {
+		ids, err := svc.List(in.Account, in.Folder, domain.Scope(in.Scope))
+		if err != nil {
+			return nil, err
+		}
+		total := len(ids)
+		if in.Limit > 0 && in.Limit < total {
+			ids = ids[:in.Limit]
+		}
+		return map[string]any{"ids": ids, "total": total, "scope": scopeOrDefault(in.Scope)}, nil
+	}
+
+	srv.Tool("email.list").
+		Description("List message ids. scope selects unread (default), read, or all mail — use read/all to look back at messages already processed. Optional: folder (see email://folders), account (see email://accounts), limit (cap the ids returned; total always reports the full count).").
 		ReadOnly().
 		UIResource(InboxUIResourceURI).
-		OutputSchema(map[string]any{"ids": []string{"m1.eml"}, "total": 1}).
+		OutputSchema(map[string]any{"ids": []string{"m1.eml"}, "total": 1, "scope": "unread"}).
+		Handler(func(_ context.Context, in listInput) (map[string]any, error) { return list(in) })
+
+	srv.Tool("email.list_unread").
+		Description("List ids of unread messages — email.list with scope=unread. Prefer email.list, which can also reach read mail.").
+		ReadOnly().
+		UIResource(InboxUIResourceURI).
+		OutputSchema(map[string]any{"ids": []string{"m1.eml"}, "total": 1, "scope": "unread"}).
 		Handler(func(_ context.Context, in struct {
 			Folder  string `json:"folder,omitempty" jsonschema:"description=Folder to list; defaults to the inbox (see email://folders)"`
 			Account string `json:"account,omitempty" jsonschema:"description=Named account; defaults to the primary (see email://accounts)"`
 			Limit   int    `json:"limit,omitempty" jsonschema:"description=Cap the ids returned; total always reports the full count"`
 		},
 		) (map[string]any, error) {
-			ids, err := svc.ListUnread(in.Account, in.Folder)
-			if err != nil {
-				return nil, err
-			}
-			total := len(ids)
-			if in.Limit > 0 && in.Limit < total {
-				ids = ids[:in.Limit]
-			}
-			return map[string]any{"ids": ids, "total": total}, nil
+			return list(listInput{Folder: in.Folder, Account: in.Account, Limit: in.Limit})
 		})
 
 	srv.Tool("email.fetch").
-		Description("Fetch the raw RFC 5322 message for an unread id, base64-encoded.").
+		Description("Fetch the raw RFC 5322 message for an id, base64-encoded. Works for read and unread messages alike; fetching never marks a message seen.").
 		ReadOnly().
 		OutputSchema(map[string]any{"raw": "<base64>"}).
 		Handler(func(_ context.Context, in struct {
-			ID      string `json:"id" jsonschema:"required,description=Unread message id from email.list_unread"`
+			ID      string `json:"id" jsonschema:"required,description=Message id from email.list"`
 			Folder  string `json:"folder,omitempty" jsonschema:"description=Folder holding the message; defaults to the inbox"`
 			Account string `json:"account,omitempty" jsonschema:"description=Named account; defaults to the primary"`
 		},
@@ -147,17 +167,18 @@ func registerTools(srv *mcp.Server, svc *application.Service) {
 		})
 
 	srv.Tool("email.search").
-		Description("Search unread messages for a text query (case-insensitive). Returns matching ids. Optional: folder, account, limit (cap the ids returned; total always reports the full count).").
+		Description("Search messages for a text query (case-insensitive). Returns matching ids. scope selects unread (default), read, or all mail — use read/all to search messages already processed. Optional: folder, account, limit (cap the ids returned; total always reports the full count).").
 		ReadOnly().
-		OutputSchema(map[string]any{"ids": []string{"m1.eml"}, "total": 1}).
+		OutputSchema(map[string]any{"ids": []string{"m1.eml"}, "total": 1, "scope": "unread"}).
 		Handler(func(_ context.Context, in struct {
-			Query   string `json:"query" jsonschema:"required,description=Text to find in unread messages (case-insensitive)"`
+			Query   string `json:"query" jsonschema:"required,description=Text to find in messages (case-insensitive)"`
+			Scope   string `json:"scope,omitempty" jsonschema:"description=Which messages to search: unread (default), read, or all,enum=unread,enum=read,enum=all"`
 			Folder  string `json:"folder,omitempty" jsonschema:"description=Folder to search; defaults to the inbox"`
 			Account string `json:"account,omitempty" jsonschema:"description=Named account; defaults to the primary"`
 			Limit   int    `json:"limit,omitempty" jsonschema:"description=Cap the ids returned; total always reports the full count"`
 		},
 		) (map[string]any, error) {
-			ids, err := svc.Search(in.Account, in.Folder, in.Query)
+			ids, err := svc.SearchScope(in.Account, in.Folder, in.Query, domain.Scope(in.Scope))
 			if err != nil {
 				return nil, err
 			}
@@ -165,8 +186,17 @@ func registerTools(srv *mcp.Server, svc *application.Service) {
 			if in.Limit > 0 && in.Limit < total {
 				ids = ids[:in.Limit]
 			}
-			return map[string]any{"ids": ids, "total": total}, nil
+			return map[string]any{"ids": ids, "total": total, "scope": scopeOrDefault(in.Scope)}, nil
 		})
+}
+
+// scopeOrDefault echoes the effective scope back to the caller so a
+// model can see that an omitted scope meant unread.
+func scopeOrDefault(scope string) string {
+	if scope == "" {
+		return string(domain.ScopeUnread)
+	}
+	return scope
 }
 
 // confirmCuration puts a human in the loop before a destructive
