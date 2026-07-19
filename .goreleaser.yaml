@@ -57,6 +57,24 @@ changelog:
       - "^docs"
       - "^test"
 
+homebrew_casks:
+  - repository:
+      owner: klarlabs-studio
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    homepage: "https://github.com/klarlabs-studio/briefkasten"
+    description: "A mailbox as an MCP server"
+    license: "MIT"
+    # The binary is unsigned, so macOS quarantines it on download and
+    # Gatekeeper refuses to run it. Strip the attribute after staging.
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/briefkasten"]
+          end
+
 release:
   draft: false
   prerelease: auto
