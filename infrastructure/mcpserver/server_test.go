@@ -111,7 +111,7 @@ func TestSendToolsAndOutboxResources(t *testing.T) {
 	client := testutil.NewTestClient(t, New(svc, WithOutbox(ob)))
 
 	sent := callMap(t, client, "email.send", map[string]any{
-		"to": []string{"x@y.z"}, "subject": "s", "body": "b",
+		"to": []string{"x@y.z"}, "subject": "s", "body": "b", "confirm": true,
 	})
 	id, _ := sent["id"].(string)
 	if id == "" || sent["state"] != "queued" {
@@ -199,7 +199,10 @@ func TestAnnotationsAndMeta(t *testing.T) {
 			t.Errorf("%s not read-only", want)
 		}
 	}
-	for _, want := range []string{"email.archive", "email.delete"} {
+	// email.send belongs here with the curation tools: hosts use the hint
+	// to decide whether to prompt, and sending is the one mutation that
+	// cannot be undone.
+	for _, want := range []string{"email.archive", "email.delete", "email.send"} {
 		if !destructive[want] {
 			t.Errorf("%s not destructive", want)
 		}

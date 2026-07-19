@@ -106,22 +106,27 @@ func TestConfigSetPatchesEveryField(t *testing.T) {
 	cfg, _ := LoadConfig("")
 	cfg.RuntimeConfig = true
 	cfg.Maildir = newRootDir(t)
+	// Start insecure so the patch can exercise the flag in the only
+	// direction runtime changes allow: towards TLS, never away from it.
+	cfg.IMAP.Insecure = true
 	cfg.Outbox = OutboxSettings{
 		Dir:        filepath.Join(t.TempDir(), "outbox"),
 		From:       "old@x.y",
 		DeliverDir: filepath.Join(t.TempDir(), "old-delivered"),
+		SMTP:       SMTPSettings{Insecure: true},
 	}
 	client := newConfigClient(t, cfg)
 
 	newDeliver := filepath.Join(t.TempDir(), "new-delivered")
 	got := rootCallMap(t, client, "config.set", map[string]any{
+		"confirm": true,
 		"backend": "imap",
 		"imap": map[string]any{
 			"addr":     "imap.example.org:993",
 			"username": "alice",
 			"password": "geheim",
 			"mailbox":  "Steuern",
-			"insecure": true,
+			"insecure": false,
 		},
 		"outbox": map[string]any{
 			"from":        "new@x.y",
@@ -131,7 +136,7 @@ func TestConfigSetPatchesEveryField(t *testing.T) {
 				"username":     "smtp-user",
 				"password":     "smtp-pass",
 				"implicit_tls": true,
-				"insecure":     true,
+				"insecure":     false,
 			},
 		},
 	})
@@ -139,7 +144,7 @@ func TestConfigSetPatchesEveryField(t *testing.T) {
 		t.Fatalf("config.set = %v", got)
 	}
 	if cfg.IMAP.Addr != "imap.example.org:993" || cfg.IMAP.Username != "alice" ||
-		cfg.IMAP.Password != "geheim" || cfg.IMAP.Mailbox != "Steuern" || !cfg.IMAP.Insecure {
+		cfg.IMAP.Password != "geheim" || cfg.IMAP.Mailbox != "Steuern" || cfg.IMAP.Insecure {
 		t.Errorf("imap after set = %+v", cfg.IMAP)
 	}
 	if cfg.Outbox.From != "new@x.y" || cfg.Outbox.DeliverDir != newDeliver {
@@ -147,7 +152,7 @@ func TestConfigSetPatchesEveryField(t *testing.T) {
 	}
 	smtp := cfg.Outbox.SMTP
 	if smtp.Addr != "smtp.example.org:587" || smtp.Username != "smtp-user" ||
-		smtp.Password != "smtp-pass" || !smtp.ImplicitTLS || !smtp.Insecure {
+		smtp.Password != "smtp-pass" || !smtp.ImplicitTLS || smtp.Insecure {
 		t.Errorf("smtp after set = %+v", smtp)
 	}
 	if s, _ := got["sender"].(string); !strings.Contains(s, "smtp.example.org") {
@@ -205,8 +210,8 @@ func TestConfigSetReportsPersistFailure(t *testing.T) {
 		}
 	})
 
-	next := newRootDir(t)
-	got := rootCallMap(t, client, "config.set", map[string]any{"maildir": next})
+	next := subMaildir(t, cfg.Maildir, "nested")
+	got := rootCallMap(t, client, "config.set", map[string]any{"maildir": next, "confirm": true})
 	if got["ok"] != true {
 		t.Fatalf("config.set = %v", got)
 	}

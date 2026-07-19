@@ -94,10 +94,11 @@ func TestConfigSetSwapsBackendAndPersists(t *testing.T) {
 	}
 	client := newConfigClient(t, cfg)
 
-	next := newRootDir(t)
+	// Nested in the startup maildir: runtime switches stay inside it.
+	next := subMaildir(t, cfg.Maildir, "archive-2026")
 	dropRoot(t, next, "new.eml", "From: n@n\r\n\r\nn")
 
-	got := rootCallMap(t, client, "config.set", map[string]any{"backend": "maildir", "maildir": next})
+	got := rootCallMap(t, client, "config.set", map[string]any{"backend": "maildir", "maildir": next, "confirm": true})
 	if got["ok"] != true || got["persisted"] != true {
 		t.Fatalf("config.set = %v", got)
 	}
@@ -160,6 +161,7 @@ func TestConfigSetReconfiguresOAuth2(t *testing.T) {
 	client := newConfigClient(t, cfg)
 
 	got := rootCallMap(t, client, "config.set", map[string]any{
+		"confirm": true,
 		"backend": "imap",
 		"imap": map[string]any{
 			"addr":     "imap.gmail.com:993",
@@ -193,7 +195,12 @@ func TestConfigSetSwapsSender(t *testing.T) {
 	client := newConfigClient(t, cfg)
 
 	got := rootCallMap(t, client, "config.set", map[string]any{
-		"outbox": map[string]any{"smtp": map[string]any{"addr": "smtp2.example.org:587"}},
+		"confirm": true,
+		// Moving the endpoint requires saying what credentials go to it;
+		// this relay takes none.
+		"outbox": map[string]any{"smtp": map[string]any{
+			"addr": "smtp2.example.org:587", "clear_credentials": true,
+		}},
 	})
 	if got["ok"] != true {
 		t.Fatalf("config.set = %v", got)
@@ -234,7 +241,7 @@ func TestConfigSetReconfiguresToDifferentCredentials(t *testing.T) {
 			imap[k] = v
 		}
 		imap["oauth2"] = map[string]any{"credentials_file": file, "refresh_token": "rtok"}
-		if got := rootCallMap(t, client, "config.set", map[string]any{"backend": "imap", "imap": imap}); got["ok"] != true {
+		if got := rootCallMap(t, client, "config.set", map[string]any{"backend": "imap", "imap": imap, "confirm": true}); got["ok"] != true {
 			t.Fatalf("config.set(%s) = %v", file, got)
 		}
 	}
@@ -247,4 +254,15 @@ func TestConfigSetReconfiguresToDifferentCredentials(t *testing.T) {
 	if cfg.IMAP.OAuth2.ClientID != "client-b.apps.googleusercontent.com" {
 		t.Errorf("after reconfig, client_id = %q, want client-b (stale-credentials regression)", cfg.IMAP.OAuth2.ClientID)
 	}
+}
+
+// subMaildir prepares a maildir nested inside root — the shape a runtime
+// maildir switch is confined to.
+func subMaildir(t *testing.T, root, name string) string {
+	t.Helper()
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(filepath.Join(dir, "new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
