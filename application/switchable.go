@@ -94,11 +94,23 @@ func (s *Switchable) Delete(id string) error {
 	return cu.Delete(id)
 }
 
+// CurationPlan forwards to the backend's inspector. The destinations
+// belong to whichever backend is current, so a runtime swap changes the
+// answer — which is exactly why it is asked rather than remembered.
+func (s *Switchable) CurationPlan() (domain.CurationPlan, error) {
+	ci, ok := s.current().(domain.CurationInspector)
+	if !ok {
+		return domain.CurationPlan{}, errors.New("briefkasten: backend cannot report curation destinations")
+	}
+	return ci.CurationPlan()
+}
+
 var (
-	_ domain.Mailbox        = (*Switchable)(nil)
-	_ domain.ScopedMailbox  = (*Switchable)(nil)
-	_ domain.Searcher       = (*Switchable)(nil)
-	_ domain.ScopedSearcher = (*Switchable)(nil)
-	_ domain.FolderMailbox  = (*Switchable)(nil)
-	_ domain.Curator        = (*Switchable)(nil)
+	_ domain.Mailbox           = (*Switchable)(nil)
+	_ domain.ScopedMailbox     = (*Switchable)(nil)
+	_ domain.Searcher          = (*Switchable)(nil)
+	_ domain.ScopedSearcher    = (*Switchable)(nil)
+	_ domain.FolderMailbox     = (*Switchable)(nil)
+	_ domain.Curator           = (*Switchable)(nil)
+	_ domain.CurationInspector = (*Switchable)(nil)
 )

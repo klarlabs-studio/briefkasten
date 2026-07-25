@@ -163,6 +163,21 @@ func (s *Service) Delete(account, folder, id string) error {
 	return cu.Delete(id)
 }
 
+// CurationPlan reports where Archive and Delete would file, without
+// moving anything — so a human can check the destination before
+// approving a move rather than inferring it from where mail landed.
+func (s *Service) CurationPlan(account, folder string) (domain.CurationPlan, error) {
+	box, err := s.Resolve(account, folder)
+	if err != nil {
+		return domain.CurationPlan{}, err
+	}
+	ci, ok := box.(domain.CurationInspector)
+	if !ok {
+		return domain.CurationPlan{}, errors.New("briefkasten: backend cannot report curation destinations")
+	}
+	return ci.CurationPlan()
+}
+
 func (s *Service) curator(account, folder string) (domain.Curator, error) {
 	box, err := s.Resolve(account, folder)
 	if err != nil {

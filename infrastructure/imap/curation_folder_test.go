@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/emersion/go-imap/v2"
+
+	"go.klarlabs.de/briefkasten/domain"
 )
 
 func box(name string, attrs ...imap.MailboxAttr) *imap.ListData {
@@ -11,22 +13,25 @@ func box(name string, attrs ...imap.MailboxAttr) *imap.ListData {
 }
 
 var (
-	archiveTarget = curationTarget{attr: imap.MailboxAttrArchive, leaf: "Archive"}
-	trashTarget   = curationTarget{attr: imap.MailboxAttrTrash, leaf: "Trash"}
+	archiveTarget = curationTarget{attr: imap.MailboxAttrArchive, leaf: "Archive", aliases: archiveAliases}
+	trashTarget   = curationTarget{attr: imap.MailboxAttrTrash, leaf: "Trash", aliases: trashAliases}
 )
 
 func TestChooseCurationFolder(t *testing.T) {
 	// The layout that motivated this: a personal namespace rooted at
 	// "INBOX.", a server that declares \Trash but stays silent about
 	// \Archive, and an INBOX.Archive folder sitting there unadvertised.
-	// Copying to a bare "Archive" fails on such a server, and creating
-	// one strands mail outside the namespace the user's client reads.
-	hetznerish := []*imap.ListData{
+	// Note the three trash-like folders — the residue of several mail
+	// clients over the years, and the reason a name table must never
+	// outrank the server's own declaration.
+	multiClient := []*imap.ListData{
 		box("INBOX"),
 		box("INBOX.Archive"),
 		box("INBOX.Drafts", imap.MailboxAttrDrafts),
 		box("INBOX.Sent", imap.MailboxAttrSent),
 		box("INBOX.Trash", imap.MailboxAttrTrash),
+		box("INBOX.Deleted Messages"),
+		box("INBOX.Papierkorb"),
 		box("INBOX.spambucket", imap.MailboxAttrJunk),
 	}
 
@@ -36,57 +41,90 @@ func TestChooseCurationFolder(t *testing.T) {
 		boxes      []*imap.ListData
 		prefix     string
 		wantFolder string
-		wantCreate bool
+		wantRoute  domain.CurationRoute
 	}{
 		{
-			"declared special-use wins",
-			trashTarget, hetznerish, "INBOX.",
-			"INBOX.Trash", false,
+			"declared special-use wins over every alias present",
+			trashTarget, multiClient, "INBOX.",
+			"INBOX.Trash", domain.RouteDeclared,
 		},
 		{
 			"undeclared archive falls back to the namespace path",
-			archiveTarget, hetznerish, "INBOX.",
-			"INBOX.Archive", false,
+			archiveTarget, multiClient, "INBOX.",
+			"INBOX.Archive", domain.RouteConvention,
 		},
 		{
 			"flat server, declared",
 			trashTarget,
 			[]*imap.ListData{box("INBOX"), box("Trash", imap.MailboxAttrTrash)},
-			"", "Trash", false,
+			"", "Trash", domain.RouteDeclared,
 		},
 		{
 			"flat server, undeclared but present",
 			archiveTarget,
 			[]*imap.ListData{box("INBOX"), box("Archive")},
-			"", "Archive", false,
+			"", "Archive", domain.RouteConvention,
 		},
 		{
-			// A prefixed server with neither declaration nor folder must
-			// create inside the namespace, never at the root.
+			// The point of the alias step: a German mailbox with no
+			// declaration and no "Trash" must file into the Papierkorb
+			// the human actually opens, not a fresh Trash beside it.
+			"localized name used instead of creating a duplicate",
+			trashTarget,
+			[]*imap.ListData{box("INBOX"), box("INBOX.Papierkorb")},
+			"INBOX.", "INBOX.Papierkorb", domain.RouteAlias,
+		},
+		{
+			"legacy Outlook name, flat server",
+			trashTarget,
+			[]*imap.ListData{box("INBOX"), box("Deleted Items")},
+			"", "Deleted Items", domain.RouteAlias,
+		},
+		{
+			// Alias order decides, not the server's LIST order, so the
+			// choice is stable across servers.
+			"earlier alias wins when several exist",
+			trashTarget,
+			[]*imap.ListData{box("INBOX"), box("Papierkorb"), box("Deleted Items")},
+			"", "Deleted Items", domain.RouteAlias,
+		},
+		{
+			"alias matching ignores case",
+			archiveTarget,
+			[]*imap.ListData{box("INBOX"), box("INBOX.archiv")},
+			"INBOX.", "INBOX.archiv", domain.RouteAlias,
+		},
+		{
+			// A conventional folder outranks any alias.
+			"convention beats alias",
+			trashTarget,
+			[]*imap.ListData{box("INBOX"), box("INBOX.Trash"), box("INBOX.Papierkorb")},
+			"INBOX.", "INBOX.Trash", domain.RouteConvention,
+		},
+		{
 			"nothing to file into, prefixed namespace",
 			archiveTarget,
 			[]*imap.ListData{box("INBOX")},
-			"INBOX.", "INBOX.Archive", true,
+			"INBOX.", "INBOX.Archive", domain.RouteCreate,
 		},
 		{
 			"nothing to file into, flat namespace",
 			trashTarget,
 			[]*imap.ListData{box("INBOX")},
-			"", "Trash", true,
+			"", "Trash", domain.RouteCreate,
 		},
 		{
-			// A declaration outranks a same-named folder elsewhere.
 			"special-use outranks a conventional path",
 			trashTarget,
 			[]*imap.ListData{box("INBOX.Trash"), box("Papierkorb", imap.MailboxAttrTrash)},
-			"INBOX.", "Papierkorb", false,
+			"INBOX.", "Papierkorb", domain.RouteDeclared,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			folder, create := chooseCurationFolder(tc.target, tc.boxes, tc.prefix)
-			if folder != tc.wantFolder || create != tc.wantCreate {
-				t.Errorf("chooseCurationFolder = (%q, create=%v), want (%q, create=%v)",
-					folder, create, tc.wantFolder, tc.wantCreate)
+			folder, route := chooseCurationFolder(tc.target, tc.boxes, tc.prefix)
+			if folder != tc.wantFolder || route != tc.wantRoute {
+				t.Errorf("chooseCurationFolder = (%q, %s), want (%q, %s)",
+					folder, route, tc.wantFolder, tc.wantRoute)
 			}
 		})
 	}
@@ -94,24 +132,24 @@ func TestChooseCurationFolder(t *testing.T) {
 
 // An operator override answers before any server round trip, so a layout
 // that defies discovery entirely still has an escape hatch.
-func TestChooseCurationFolderOverrideShortCircuits(t *testing.T) {
+func TestCurationOverrideShortCircuits(t *testing.T) {
 	m := &Mailbox{cfg: Config{ArchiveFolder: "Archiv/2026", TrashFolder: "Müll"}}
 
-	// resolveCurationFolder returns the override before touching the
-	// client, which is why a nil client cannot panic here.
+	// planCurationFolder returns the override before touching the client,
+	// which is why a nil client cannot panic here.
 	for _, tc := range []struct {
 		target curationTarget
 		want   string
 	}{
-		{curationTarget{override: m.cfg.ArchiveFolder, attr: imap.MailboxAttrArchive, leaf: "Archive"}, "Archiv/2026"},
-		{curationTarget{override: m.cfg.TrashFolder, attr: imap.MailboxAttrTrash, leaf: "Trash"}, "Müll"},
+		{m.archiveTarget(), "Archiv/2026"},
+		{m.trashTarget(), "Müll"},
 	} {
-		got, err := m.resolveCurationFolder(nil, tc.target)
+		got, err := m.planCurationFolder(nil, tc.target)
 		if err != nil {
 			t.Fatalf("override resolve: %v", err)
 		}
-		if got != tc.want {
-			t.Errorf("override = %q, want %q", got, tc.want)
+		if got.Folder != tc.want || got.Route != domain.RouteOverride {
+			t.Errorf("override = %+v, want %q via %s", got, tc.want, domain.RouteOverride)
 		}
 	}
 }

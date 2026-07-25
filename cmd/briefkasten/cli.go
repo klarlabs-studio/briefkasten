@@ -43,6 +43,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	scope := fs.String("scope", "unread", "which messages to list/search: unread, read, or all")
 	account := fs.String("account", "", "named account from the config")
 	asJSON := fs.Bool("json", false, "machine-readable output")
+	curation := fs.Bool("curation", false, "with 'folders': show where archive and delete would file, and why")
 	yes := fs.Bool("yes", false, "skip confirmation prompts")
 	configPath := fs.String("config", "", "config file (default: $BRIEFKASTEN_CONFIG or ./briefkasten.yaml)")
 	to := fs.String("to", "", "recipients, comma-separated (send)")
@@ -135,6 +136,22 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		emit(strings.Join(names, "\n"), map[string]any{"profiles": names, "active_backend": active})
 
 	case "folders":
+		// --curation answers "where would archive and delete file?"
+		// before anything moves, so a wrong destination is caught by
+		// reading rather than by finding mail somewhere unexpected.
+		if *curation {
+			plan, err := svc.CurationPlan(*account, *folder)
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			emit(
+				fmt.Sprintf("archive  %s  (%s)\ndelete   %s  (%s)",
+					plan.Archive.Folder, plan.Archive.Route,
+					plan.Trash.Folder, plan.Trash.Route),
+				plan)
+			break
+		}
 		folders, err := svc.Folders(*account)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
@@ -289,6 +306,10 @@ serve [--stdio] [--config FILE]   MCP server; --stdio serves over stdin/stdout
 
 --version (or version) prints the build metadata; add --json for a
 machine-readable form that also reports the toolchain and platform.
+
+folders --curation shows where archive and delete would file and how each
+destination was decided (override, declared, convention, alias, create) —
+without moving anything.
 
 list and search take --scope unread (default), read, or all. Listing and
 reading never change a message's state.

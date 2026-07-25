@@ -64,7 +64,7 @@ Beyond tools, the full MCP surface:
 
 | Surface | What |
 |---|---|
-| Resources | `email://inbox`, `email://inbox/{id}` (raw RFC 5322), `email://inbox/{id}/headers` (parsed from/to/subject/date/message_id — triage without fetching the body), `email://outbox`, `email://outbox/{id}`, `email://folders`, `email://accounts` — read state without spending tool calls; `{id}` serves and completes read and unread ids alike |
+| Resources | `email://inbox`, `email://inbox/{id}` (raw RFC 5322), `email://inbox/{id}/headers` (parsed from/to/subject/date/message_id — triage without fetching the body), `email://outbox`, `email://outbox/{id}`, `email://folders` (folders plus the curation destinations and how each was decided), `email://accounts` — read state without spending tool calls; `{id}` serves and completes read and unread ids alike |
 | Prompts | `summarize_inbox(count?)` (embeds up to `count` unread messages, default 20, each truncated at 16 KiB), `draft_reply(id)` (embeds the original — read or unread — truncated at 16 KiB) |
 | Annotations | read tools are `readOnlyHint`, `mark_seen` is `idempotentHint`, `config.set` is `destructiveHint` |
 | Instructions | the consumption contract (mark seen only after successful processing) ships as server instructions |
@@ -129,7 +129,7 @@ briefkasten list   [--scope unread|read|all] [--folder F] [--account A] [--json]
 briefkasten read   <id>
 briefkasten seen   <id>
 briefkasten search <query> [--scope unread|read|all]
-briefkasten folders
+briefkasten folders [--curation]   # --curation: where archive/delete would file
 briefkasten profiles          # names switchable via config.set {"profile": ...}
 briefkasten send   --to a@b.c --subject S --body B [--html '<p>H</p>'] [--attach file.pdf ...]
 briefkasten retry  <id>       # re-queue a failed send and deliver
@@ -192,6 +192,8 @@ instead, in order of authority:
    mailbox is marked `\Archive` or `\Trash`.
 3. **The personal namespace's conventional path** — the prefix reported
    by `NAMESPACE` plus `Archive`/`Trash`, used when it already exists.
+4. **A known localized or legacy name** — `Papierkorb`, `Corbeille`,
+   `Deleted Items`, `Archiv`, … matched case-insensitively.
 
 Only when none of those resolve does briefkasten create a folder, and it
 creates it *inside* the namespace. If that fails, the error names every
@@ -199,6 +201,27 @@ location it looked in rather than reporting a move that never happened.
 
 Servers commonly declare `\Trash` but not `\Archive`, so the two often
 resolve by different routes on the same mailbox — that is expected.
+
+Step 4 ranks last deliberately. A mailbox touched by several clients over
+the years can hold `Trash`, `Deleted Messages`, and `Papierkorb` at once,
+and a name table cannot tell which one the human still opens — only the
+server or the operator can settle that. Aliases exist to stop briefkasten
+creating a *fourth* one beside them, nothing more.
+
+### Seeing where mail would go
+
+Curation destinations are inspectable before anything moves:
+
+```bash
+$ briefkasten folders --curation
+archive  INBOX.Archive  (convention)
+delete   INBOX.Trash  (declared)
+```
+
+`--json` gives the machine-readable form. Over MCP the same plan rides on
+the `email://folders` resource under `curation`, and the archive/delete
+confirmation prompt names the destination — so whoever approves a move
+can see where it lands before saying yes.
 
 ## Configure
 
