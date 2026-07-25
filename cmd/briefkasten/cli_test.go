@@ -207,3 +207,51 @@ func TestCLIVersionNeedsNoConfig(t *testing.T) {
 		t.Errorf("out = %q, want the version", out)
 	}
 }
+
+// Curation destinations must be inspectable before anything moves — the
+// dir backend's are fixed, so the report is exact.
+func TestCLIFoldersCuration(t *testing.T) {
+	cfg, _ := writeCLIConfig(t)
+
+	code, out, errOut := runCLI(t, "", "folders", "--curation", "--config", cfg)
+	if code != 0 {
+		t.Fatalf("folders --curation = %d, stderr %q", code, errOut)
+	}
+	for _, want := range []string{"archive", ".archive", "delete", ".trash", "fixed"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output %q missing %q", out, want)
+		}
+	}
+
+	code, out, _ = runCLI(t, "", "folders", "--curation", "--json", "--config", cfg)
+	if code != 0 {
+		t.Fatalf("json = %d", code)
+	}
+	var plan struct {
+		Archive struct{ Folder, Route string } `json:"archive"`
+		Trash   struct{ Folder, Route string } `json:"trash"`
+	}
+	if err := json.Unmarshal([]byte(out), &plan); err != nil {
+		t.Fatalf("not JSON: %v (%q)", err, out)
+	}
+	if plan.Archive.Folder != ".archive" || plan.Trash.Folder != ".trash" {
+		t.Errorf("plan = %+v, want the dir destinations", plan)
+	}
+	if plan.Trash.Route != "fixed" {
+		t.Errorf("route = %q, want fixed", plan.Trash.Route)
+	}
+}
+
+// Plain `folders` keeps listing folders — the flag adds a view, it does
+// not replace one.
+func TestCLIFoldersWithoutCurationUnchanged(t *testing.T) {
+	cfg, _ := writeCLIConfig(t)
+
+	code, out, _ := runCLI(t, "", "folders", "--config", cfg)
+	if code != 0 || !strings.Contains(out, "INBOX") {
+		t.Fatalf("folders = %d %q, want the folder list", code, out)
+	}
+	if strings.Contains(out, "fixed") {
+		t.Errorf("folders leaked the curation view: %q", out)
+	}
+}

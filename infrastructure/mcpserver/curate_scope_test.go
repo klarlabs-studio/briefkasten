@@ -1,12 +1,14 @@
 package mcpserver
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"go.klarlabs.de/mcp/server"
 
 	"go.klarlabs.de/briefkasten/application"
+	"go.klarlabs.de/briefkasten/domain"
 )
 
 // Curation is not an unread-only privilege: a message that was processed
@@ -144,5 +146,62 @@ func TestIDCompletionsCoverReadMail(t *testing.T) {
 		if !got["beta.eml"] {
 			t.Errorf("%s completion = %v, want the unread message beta.eml among them", tc.name, res.Values)
 		}
+	}
+}
+
+// Approving a move is only meaningful if you know where it goes, so the
+// elicitation prompt names the destination.
+func TestConfirmationPromptNamesDestination(t *testing.T) {
+	sender := &fakeElicitSender{action: "accept"}
+	ctx := elicitCtx(t, sender)
+
+	if err := confirmCuration(ctx, false, "delete", "m1.eml", "INBOX.Trash"); err != nil {
+		t.Fatalf("confirmCuration: %v", err)
+	}
+	if !strings.Contains(sender.prompt, "INBOX.Trash") {
+		t.Errorf("prompt = %q, want it to name the destination folder", sender.prompt)
+	}
+	if !strings.Contains(sender.prompt, "never destroyed") {
+		t.Errorf("prompt = %q, want it to still say the move is reversible", sender.prompt)
+	}
+}
+
+// A backend that cannot report a destination must still be able to ask.
+func TestConfirmationPromptWithoutDestination(t *testing.T) {
+	sender := &fakeElicitSender{action: "accept"}
+	ctx := elicitCtx(t, sender)
+
+	if err := confirmCuration(ctx, false, "archive", "m1.eml", ""); err != nil {
+		t.Fatalf("confirmCuration: %v", err)
+	}
+	if !strings.Contains(sender.prompt, "never destroyed") {
+		t.Errorf("prompt = %q, want the reversibility wording", sender.prompt)
+	}
+}
+
+// The folders resource carries the curation plan, so a client can show
+// where mail would go without spending a tool call or moving anything.
+func TestFoldersResourceReportsCurationPlan(t *testing.T) {
+	client, _ := newClient(t)
+
+	text, err := client.ReadResource("email://folders")
+	if err != nil {
+		t.Fatalf("read email://folders: %v", err)
+	}
+	var payload struct {
+		Folders  []string            `json:"folders"`
+		Curation domain.CurationPlan `json:"curation"`
+	}
+	if err := json.Unmarshal([]byte(text), &payload); err != nil {
+		t.Fatalf("folders payload not JSON: %v (%q)", err, text)
+	}
+	if len(payload.Folders) == 0 {
+		t.Error("folders list is empty")
+	}
+	if payload.Curation.Trash.Folder != ".trash" || payload.Curation.Archive.Folder != ".archive" {
+		t.Errorf("curation = %+v, want the maildir destinations", payload.Curation)
+	}
+	if payload.Curation.Trash.Route != domain.RouteFixed {
+		t.Errorf("route = %q, want %q for the dir backend", payload.Curation.Trash.Route, domain.RouteFixed)
 	}
 }

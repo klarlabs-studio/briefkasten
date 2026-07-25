@@ -176,13 +176,29 @@ func (r *Mailbox) Delete(id string) error {
 	return err
 }
 
+// CurationPlan forwards to the wrapped backend's inspector through the
+// pipeline. Resolution talks to the server, so it deserves the same
+// timeout and breaker as any other call.
+func (r *Mailbox) CurationPlan() (domain.CurationPlan, error) {
+	ci, ok := r.mb.(domain.CurationInspector)
+	if !ok {
+		return domain.CurationPlan{}, errors.New("briefkasten: backend cannot report curation destinations")
+	}
+	v, err := r.execute(func() (any, error) { return ci.CurationPlan() })
+	if err != nil {
+		return domain.CurationPlan{}, err
+	}
+	return v.(domain.CurationPlan), nil
+}
+
 var (
-	_ domain.Mailbox        = (*Mailbox)(nil)
-	_ domain.ScopedMailbox  = (*Mailbox)(nil)
-	_ domain.Searcher       = (*Mailbox)(nil)
-	_ domain.ScopedSearcher = (*Mailbox)(nil)
-	_ domain.FolderMailbox  = (*Mailbox)(nil)
-	_ domain.Curator        = (*Mailbox)(nil)
+	_ domain.Mailbox           = (*Mailbox)(nil)
+	_ domain.CurationInspector = (*Mailbox)(nil)
+	_ domain.ScopedMailbox     = (*Mailbox)(nil)
+	_ domain.Searcher          = (*Mailbox)(nil)
+	_ domain.ScopedSearcher    = (*Mailbox)(nil)
+	_ domain.FolderMailbox     = (*Mailbox)(nil)
+	_ domain.Curator           = (*Mailbox)(nil)
 )
 
 // listFallback mirrors the application-layer scoped-list fallback for

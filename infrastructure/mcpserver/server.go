@@ -212,11 +212,34 @@ func scopeOrDefault(scope string) string {
 
 // confirmCuration puts a human in the loop before a soft-move of a
 // message. Curation is reversible — nothing is ever expunged — so the
-// prompt says so.
-func confirmCuration(ctx context.Context, confirmed bool, action, id string) error {
+// prompt says so, and it names the destination: approving a move is
+// only meaningful if you know where it goes.
+func confirmCuration(ctx context.Context, confirmed bool, action, id, destination string) error {
+	where := "The message is moved, never destroyed."
+	if destination != "" {
+		where = fmt.Sprintf("It will be filed into %q — moved, never destroyed.", destination)
+	}
 	return ConfirmAction(ctx, confirmed,
 		fmt.Sprintf("%s of %q", action, id),
-		fmt.Sprintf("Confirm %s of message %q? The message is moved, never destroyed.", action, id))
+		fmt.Sprintf("Confirm %s of message %q? %s", action, id, where))
+}
+
+// curationDestination reports where a curation would file, for the
+// confirmation prompt. Best-effort and skipped when the caller already
+// confirmed: it costs a server round trip, and a backend that cannot
+// answer must not block the operation.
+func curationDestination(svc *application.Service, confirmed bool, account, folder, action string) string {
+	if confirmed {
+		return ""
+	}
+	plan, err := svc.CurationPlan(account, folder)
+	if err != nil {
+		return ""
+	}
+	if action == "archive" {
+		return plan.Archive.Folder
+	}
+	return plan.Trash.Folder
 }
 
 // confirmSend puts a human in the loop before mail leaves the machine.
@@ -271,7 +294,8 @@ func registerCurateTools(srv *mcp.Server, svc *application.Service) {
 		Destructive().
 		OutputSchema(map[string]any{"ok": true}).
 		Handler(func(ctx context.Context, in curateInput) (map[string]any, error) {
-			if err := confirmCuration(ctx, in.Confirm, "archive", in.ID); err != nil {
+			dest := curationDestination(svc, in.Confirm, in.Account, in.Folder, "archive")
+			if err := confirmCuration(ctx, in.Confirm, "archive", in.ID, dest); err != nil {
 				return nil, err
 			}
 			if err := svc.Archive(in.Account, in.Folder, in.ID); err != nil {
@@ -285,7 +309,8 @@ func registerCurateTools(srv *mcp.Server, svc *application.Service) {
 		Destructive().
 		OutputSchema(map[string]any{"ok": true}).
 		Handler(func(ctx context.Context, in curateInput) (map[string]any, error) {
-			if err := confirmCuration(ctx, in.Confirm, "delete", in.ID); err != nil {
+			dest := curationDestination(svc, in.Confirm, in.Account, in.Folder, "delete")
+			if err := confirmCuration(ctx, in.Confirm, "delete", in.ID, dest); err != nil {
 				return nil, err
 			}
 			if err := svc.Delete(in.Account, in.Folder, in.ID); err != nil {

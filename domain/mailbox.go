@@ -103,6 +103,51 @@ type Curator interface {
 	Delete(id string) error
 }
 
+// CurationRoute names how a curation destination was decided. It exists
+// so the choice can be shown to a human before mail moves, rather than
+// inferred afterwards from where mail landed.
+type CurationRoute string
+
+const (
+	// RouteOverride means the operator named the folder in configuration.
+	RouteOverride CurationRoute = "override"
+	// RouteDeclared means the server declared it (RFC 6154 SPECIAL-USE).
+	RouteDeclared CurationRoute = "declared"
+	// RouteConvention means the conventional path inside the personal
+	// namespace, which already exists.
+	RouteConvention CurationRoute = "convention"
+	// RouteAlias means an existing folder under a known localized or
+	// legacy name, matched only to avoid creating a duplicate beside it.
+	RouteAlias CurationRoute = "alias"
+	// RouteCreate means nothing suitable exists and the folder would be
+	// created.
+	RouteCreate CurationRoute = "create"
+	// RouteFixed means the backend's layout is not negotiable — the
+	// maildir backend always files into .archive and .trash.
+	RouteFixed CurationRoute = "fixed"
+)
+
+// CurationDestination is where one curation operation would file a
+// message, and how that was decided.
+type CurationDestination struct {
+	Folder string        `json:"folder"`
+	Route  CurationRoute `json:"route"`
+}
+
+// CurationPlan reports both curation destinations without moving
+// anything — the answer to "where would this go?" asked in advance.
+type CurationPlan struct {
+	Archive CurationDestination `json:"archive"`
+	Trash   CurationDestination `json:"trash"`
+}
+
+// CurationInspector is an optional Curator capability: reporting where
+// curation would file, before it files anything. Resolution can consult
+// the server, so this is a query, not a pure accessor.
+type CurationInspector interface {
+	CurationPlan() (CurationPlan, error)
+}
+
 // ErrBadID rejects message ids that try to escape the mailbox.
 var ErrBadID = errors.New("briefkasten: invalid message id")
 

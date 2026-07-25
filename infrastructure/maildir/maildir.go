@@ -240,4 +240,18 @@ func (d *Mailbox) Archive(id string) error { return d.moveTo(".archive", id) }
 // delete; real removal stays a human decision outside briefkasten.
 func (d *Mailbox) Delete(id string) error { return d.moveTo(".trash", id) }
 
-var _ domain.Curator = (*Mailbox)(nil)
+// CurationPlan reports where curation files messages. The dir backend
+// owns its whole layout, so there is nothing to discover — the answer is
+// the same every time, and reported only so the surface matches the IMAP
+// backend rather than leaving humans to guess which one they are on.
+func (d *Mailbox) CurationPlan() (domain.CurationPlan, error) {
+	return domain.CurationPlan{
+		Archive: domain.CurationDestination{Folder: ".archive", Route: domain.RouteFixed},
+		Trash:   domain.CurationDestination{Folder: ".trash", Route: domain.RouteFixed},
+	}, nil
+}
+
+var (
+	_ domain.Curator           = (*Mailbox)(nil)
+	_ domain.CurationInspector = (*Mailbox)(nil)
+)

@@ -61,14 +61,22 @@ func registerResources(srv *mcp.Server, svc *application.Service, ob *applicatio
 
 	srv.Resource("email://folders").
 		Name("Folders").
-		Description("Available mailbox folders.").
+		Description("Available mailbox folders, plus where email.archive and email.delete would file (and how each destination was decided).").
 		MimeType("application/json").
 		Handler(func(_ context.Context, uri string, _ map[string]string) (*server.ResourceContent, error) {
 			folders, err := svc.Folders("")
 			if err != nil {
 				return nil, err
 			}
-			return jsonResource(uri, map[string]any{"folders": folders})
+			payload := map[string]any{"folders": folders}
+			// Curation destinations ride along so the answer to "where
+			// would this go?" is available before asking a human to
+			// approve a move. Best-effort: a backend that cannot report
+			// them must not break folder listing.
+			if plan, err := svc.CurationPlan("", ""); err == nil {
+				payload["curation"] = plan
+			}
+			return jsonResource(uri, payload)
 		})
 
 	srv.Resource("email://accounts").

@@ -16,7 +16,7 @@ including claims from subagents and from memory.
 Company: klarlabs — open-source Go tooling.
 What we're building: briefkasten, a mailbox served over MCP so agents can read,
 search, curate, and send mail through one contract instead of binding to IMAP.
-Phase: maintenance / hardening. Released and versioned; v0.23.0 current.
+Phase: maintenance / hardening. Released and versioned; v0.24.0 current.
 Stack: Go, hexagonal architecture, go-imap v2, go.klarlabs.de/mcp, goreleaser,
 warden commit gate, coverctl coverage gates.
 
@@ -88,6 +88,10 @@ warden's pre-push gate runs exactly these, so failing locally is faster.
   `Archive`/`Trash` had never worked on an `INBOX.`-rooted server; asking the
   server (SPECIAL-USE, then NAMESPACE) fixes the whole class, and the config
   override exists for what neither answers.
+- 2026-07-25: Rank localized folder aliases below every other signal. A
+  long-lived mailbox holds several plausible trash folders; a name table
+  cannot tell which the human opens, so aliases only prevent creating one
+  more, never override a declaration or an existing conventional path.
 
 ## Active Patterns
 - "brief me" → /brief (reads ./memory/status.md)

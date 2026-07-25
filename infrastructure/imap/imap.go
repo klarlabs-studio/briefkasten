@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 
 	"go.klarlabs.de/briefkasten/domain"
 	"go.klarlabs.de/briefkasten/infrastructure/auth"
@@ -271,7 +272,47 @@ type curationTarget struct {
 	override string
 	attr     imap.MailboxAttr
 	leaf     string
+	// aliases are folder names other clients leave behind — localized
+	// or legacy. They are consulted last, and only to avoid creating a
+	// duplicate next to a folder that already does the job.
+	aliases []string
 }
+
+// Folder names mail clients create for the same purpose in different
+// languages and eras. Order is priority: an earlier entry wins, so the
+// choice does not depend on the order a server happens to LIST in.
+//
+// These rank below the server's own declaration and below the
+// conventional path on purpose. A mailbox touched by several clients
+// over the years can hold three plausible trash folders at once, and a
+// name table cannot tell which one the human still opens — only the
+// server (SPECIAL-USE) or the operator can settle that. The list earns
+// its place only in the case where the alternative is creating a fresh
+// folder beside the one already in use.
+var (
+	trashAliases = []string{
+		"Deleted Items",    // Outlook / Exchange
+		"Deleted Messages", // Apple Mail
+		"Papierkorb",       // de
+		"Corbeille",        // fr
+		"Papelera",         // es
+		"Cestino",          // it
+		"Lixeira",          // pt
+		"Prullenbak",       // nl
+		"Kosz",             // pl
+		"Skräp",            // sv
+		"Slettede elementer",
+	}
+	archiveAliases = []string{
+		"Archives", // plural is common on Dovecot/Thunderbird
+		"Archiv",   // de
+		"Archivio", // it
+		"Archivo",  // es
+		"Arquivo",  // pt
+		"Arkiv",    // sv/da/no
+		"Archiwum", // pl
+	}
+)
 
 // resolveCurationFolder finds where a soft move should land, in order of
 // authority: the operator's override, the server's own SPECIAL-USE
@@ -284,30 +325,59 @@ type curationTarget struct {
 // fails, and creating one puts a stray folder outside the namespace the
 // user's mail client reads.
 func (m *Mailbox) resolveCurationFolder(c *imapclient.Client, t curationTarget) (string, error) {
-	if t.override != "" {
-		return t.override, nil
-	}
-
-	boxes, err := c.List("", "*", &imap.ListOptions{ReturnSpecialUse: true}).Collect()
+	dest, err := m.planCurationFolder(c, t)
 	if err != nil {
-		return "", fmt.Errorf("imap: cannot resolve the %s folder: %w", t.leaf, err)
+		return "", err
 	}
-	prefix := m.personalPrefix(c)
-
-	folder, mustCreate := chooseCurationFolder(t, boxes, prefix)
-	if !mustCreate {
-		return folder, nil
+	if dest.Route != domain.RouteCreate {
+		return dest.Folder, nil
 	}
 	// Nothing to file into yet. Create it where the namespace says it
 	// belongs, so it lands beside the user's other folders rather than
 	// somewhere their mail client will never look.
-	if err := c.Create(folder, nil).Wait(); err != nil {
+	if err := c.Create(dest.Folder, nil).Wait(); err != nil {
 		return "", fmt.Errorf(
-			"imap: no %s folder found (no mailbox declares %s, and neither %q nor %q exists) and creating %q failed: %w",
-			t.leaf, t.attr, prefix+t.leaf, t.leaf, folder, err)
+			"imap: no %s folder found (no mailbox declares %s, and neither %q nor any known alias exists) and creating it failed: %w",
+			t.leaf, t.attr, dest.Folder, err)
 	}
-	return folder, nil
+	return dest.Folder, nil
 }
+
+// planCurationFolder resolves a destination without creating anything,
+// so the same decision can be reported to a human in advance.
+func (m *Mailbox) planCurationFolder(c *imapclient.Client, t curationTarget) (domain.CurationDestination, error) {
+	if t.override != "" {
+		return domain.CurationDestination{Folder: t.override, Route: domain.RouteOverride}, nil
+	}
+	boxes, err := c.List("", "*", &imap.ListOptions{ReturnSpecialUse: true}).Collect()
+	if err != nil {
+		return domain.CurationDestination{}, fmt.Errorf("imap: cannot resolve the %s folder: %w", t.leaf, err)
+	}
+	folder, route := chooseCurationFolder(t, boxes, m.personalPrefix(c))
+	return domain.CurationDestination{Folder: folder, Route: route}, nil
+}
+
+// CurationPlan reports where Archive and Delete would file, and how each
+// destination was decided, without moving or creating anything.
+func (m *Mailbox) CurationPlan() (domain.CurationPlan, error) {
+	c, err := m.dial()
+	if err != nil {
+		return domain.CurationPlan{}, err
+	}
+	defer closeClient(c)
+
+	archive, err := m.planCurationFolder(c, m.archiveTarget())
+	if err != nil {
+		return domain.CurationPlan{}, err
+	}
+	trash, err := m.planCurationFolder(c, m.trashTarget())
+	if err != nil {
+		return domain.CurationPlan{}, err
+	}
+	return domain.CurationPlan{Archive: archive, Trash: trash}, nil
+}
+
+var _ domain.CurationInspector = (*Mailbox)(nil)
 
 // chooseCurationFolder decides where a soft move lands from what the
 // server listed and where its personal namespace is rooted. Pure, so
@@ -317,25 +387,38 @@ func (m *Mailbox) resolveCurationFolder(c *imapclient.Client, t curationTarget) 
 // server will not reproduce.
 //
 // Order of authority: the server's own SPECIAL-USE declaration, then an
-// existing folder at the namespace's conventional path, then an existing
-// flat folder, and only then a path to create.
-func chooseCurationFolder(t curationTarget, boxes []*imap.ListData, prefix string) (folder string, mustCreate bool) {
-	existing := make(map[string]bool, len(boxes))
+// existing folder at the namespace's conventional path, then a known
+// localized or legacy name, and only then a path to create.
+func chooseCurationFolder(t curationTarget, boxes []*imap.ListData, prefix string) (string, domain.CurationRoute) {
+	existing := make(map[string]string, len(boxes)) // lowercased leaf -> full name
 	for _, b := range boxes {
 		if slices.Contains(b.Attrs, t.attr) {
-			return b.Mailbox, false
+			return b.Mailbox, domain.RouteDeclared
 		}
-		existing[b.Mailbox] = true
+		existing[strings.ToLower(leafOf(b.Mailbox, prefix))] = b.Mailbox
 	}
-	switch {
-	case existing[prefix+t.leaf]:
-		return prefix + t.leaf, false
-	case existing[t.leaf]:
-		// A flat server, or one whose personal namespace is the root.
-		return t.leaf, false
-	default:
-		return prefix + t.leaf, true
+
+	if full, ok := existing[strings.ToLower(t.leaf)]; ok {
+		return full, domain.RouteConvention
 	}
+	// Nothing canonical. Before creating a folder, check whether another
+	// client already made one for this purpose under a different name —
+	// filing beside it would split the user's mail across two folders.
+	for _, alias := range t.aliases {
+		if full, ok := existing[strings.ToLower(alias)]; ok {
+			return full, domain.RouteAlias
+		}
+	}
+	return prefix + t.leaf, domain.RouteCreate
+}
+
+// leafOf strips the personal namespace prefix so "INBOX.Papierkorb" and
+// a flat "Papierkorb" compare equal.
+func leafOf(mailbox, prefix string) string {
+	if prefix != "" {
+		return strings.TrimPrefix(mailbox, prefix)
+	}
+	return mailbox
 }
 
 // personalPrefix reports where the user's own folders are rooted (e.g.
@@ -400,24 +483,30 @@ func (m *Mailbox) fileTo(t curationTarget, id string) error {
 // original is marked seen, never expunged. The destination is whatever
 // the server calls its archive — many advertise \Trash but not
 // \Archive, so this commonly resolves through the namespace path.
-func (m *Mailbox) Archive(id string) error {
-	return m.fileTo(curationTarget{
+func (m *Mailbox) Archive(id string) error { return m.fileTo(m.archiveTarget(), id) }
+
+func (m *Mailbox) archiveTarget() curationTarget {
+	return curationTarget{
 		override: m.cfg.ArchiveFolder,
 		attr:     imap.MailboxAttrArchive,
 		leaf:     "Archive",
-	}, id)
+		aliases:  archiveAliases,
+	}
+}
+
+func (m *Mailbox) trashTarget() curationTarget {
+	return curationTarget{
+		override: m.cfg.TrashFolder,
+		attr:     imap.MailboxAttrTrash,
+		leaf:     "Trash",
+		aliases:  trashAliases,
+	}
 }
 
 // Delete files the message into the server's trash folder — a soft
 // delete; real removal stays with the mail provider's retention,
 // briefkasten never expunges.
-func (m *Mailbox) Delete(id string) error {
-	return m.fileTo(curationTarget{
-		override: m.cfg.TrashFolder,
-		attr:     imap.MailboxAttrTrash,
-		leaf:     "Trash",
-	}, id)
-}
+func (m *Mailbox) Delete(id string) error { return m.fileTo(m.trashTarget(), id) }
 
 var _ domain.Curator = (*Mailbox)(nil)
 

@@ -30,12 +30,20 @@ Hexagonal, with the dependency arrow pointing inward at `domain/`.
   they do not hold, which would report a move that never happened.
 - **The destination is asked for, never assumed.** Curation folders resolve
   through config override → RFC 6154 SPECIAL-USE → the personal namespace's
-  conventional path. A mailbox rooted at `INBOX.` keeps its trash at
-  `INBOX.Trash`, and such servers routinely declare `\Trash` while staying
-  silent about `\Archive` — so the two targets often resolve by different
-  routes on one server. The decision is a pure function
-  (`chooseCurationFolder`) precisely because the layouts that matter are the
-  ones an in-memory test server cannot reproduce.
+  conventional path → a known localized/legacy name. A mailbox rooted at
+  `INBOX.` keeps its trash at `INBOX.Trash`, and such servers routinely
+  declare `\Trash` while staying silent about `\Archive` — so the two targets
+  often resolve by different routes on one server. The alias step ranks last
+  because a long-lived mailbox can hold `Trash`, `Deleted Messages`, and
+  `Papierkorb` at once; it exists to avoid creating a fourth, not to guess
+  among three. The decision is a pure function (`chooseCurationFolder`)
+  precisely because the layouts that matter are the ones an in-memory test
+  server cannot reproduce.
+- **A destination is knowable before it is used.** `domain.CurationInspector`
+  reports where curation would file and by which route, without moving
+  anything — surfaced as `folders --curation`, on `email://folders`, and in
+  the confirmation prompt. Approving a soft move means little without knowing
+  where it goes.
 - **Reading never mutates.** IMAP fetches `BODY.PEEK[]`; the maildir backend
   reads files in place. This is what makes `scope=read`/`all` safe — looking at
   processed mail cannot disturb the unread backlog.
