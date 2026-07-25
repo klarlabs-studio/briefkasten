@@ -20,11 +20,13 @@ type stubMailbox struct {
 	fetchErrs map[string]error
 	seenErr   error
 	seenCalls int
+	fetches   int
 }
 
 func (s *stubMailbox) ListUnread(context.Context) ([]string, error) { return s.ids, nil }
 
 func (s *stubMailbox) Fetch(_ context.Context, id string) ([]byte, error) {
+	s.fetches++
 	if err := s.fetchErrs[id]; err != nil {
 		return nil, err
 	}

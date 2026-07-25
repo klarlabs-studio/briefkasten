@@ -153,6 +153,33 @@ const MaxBulkIDs = 100
 // measured over it is refused, never trimmed: see ErrFetchTooLarge.
 const MaxFetchBytes = 25 << 20 // 25 MiB
 
+// MaxSummaryMessages caps how many messages one summary embeds.
+//
+// The other two ceilings bound what a call moves; this one bounds what a
+// call quotes. A summary embeds message bodies verbatim, so without a cap
+// its size is the mailbox's size: on a 50,000-message backlog, a caller
+// asking to summarize the lot builds the whole backlog in memory as one
+// string before anything downstream gets the chance to decline it. And
+// because the embedded bodies are untrusted, the widest possible embed is
+// also the widest possible injection payload — the memory cost is only
+// half of what the cap is for.
+//
+// 100 is deliberately the same number MaxBulkIDs allows one bulk call, so
+// a caller can summarize exactly the set it could then curate in one
+// call, and no more. The byte side needs
+// no budget of its own. Every embedded message is already truncated
+// individually (16 KiB in the MCP adapter), so 100 of them is at most
+// ~1.6 MiB — two orders of magnitude under MaxFetchBytes, and small
+// enough that a second knob would guard nothing the first does not. The
+// message count was the only unbounded dimension, so it is the only one
+// capped.
+//
+// Unlike MaxBulkIDs, asking for more than this is not an error. A summary
+// is a read-only convenience, not a destructive batch: a caller over the
+// cap gets the cap, and is told in the rendered text that it was clamped
+// and that asking again for more will not help.
+const MaxSummaryMessages = 100
+
 // ErrBulkSize rejects a batch that is empty, over MaxBulkIDs, or repeats
 // an id.
 var ErrBulkSize = errors.New("briefkasten: invalid batch")
@@ -419,6 +446,63 @@ type CurationPlan struct {
 // other query here, it honours its context.
 type CurationInspector interface {
 	CurationPlan(ctx context.Context) (CurationPlan, error)
+}
+
+// MaxScanMessages caps how many messages the search fallback may read in
+// one call.
+//
+// The fallback is the last resort: it only runs for a backend that
+// implements neither ScopedSearcher nor Searcher. Both shipped backends
+// search natively — maildir scans locally, IMAP searches server-side —
+// so this bounds a third-party backend implementing the bare Mailbox
+// port, and changes nothing for the mailboxes briefkasten ships with.
+//
+// What it bounds is the number of messages examined, not the bytes read.
+// The scan holds one body at a time and discards it after matching, so
+// peak memory is already one message; the quantity that grows without
+// limit is the number of Fetch calls, each of them a round trip on a
+// backend that may well be remote. A byte budget on top of that could
+// only be enforced by counting bytes as they arrive — a limit discovered
+// by spending the very resource it protects. The pre-flight in
+// CheckFetchBudget can refuse before reading because a batch fetch is
+// measurable up front; a backend that cannot even search is not one to
+// rely on to measure, so the honest bound here is the count, which is
+// known from the listing before a single message is read.
+//
+// 5000 is fifty times MaxBulkIDs. A read-only scan nobody had to
+// confirm may reasonably range wider than a batch a human approved, but
+// not without limit: it sits well above any backlog a person searches
+// through by hand, and low enough that the worst case is thousands of
+// reads rather than millions.
+const MaxScanMessages = 5000
+
+// ErrScanTooLarge refuses a fallback scan over MaxScanMessages.
+var ErrScanTooLarge = errors.New("briefkasten: mailbox too large to scan")
+
+// CheckScanBudget refuses a scan wider than MaxScanMessages before any of
+// it runs.
+//
+// The refusal is whole, and it is deliberately not a truncation. A scan
+// that stopped at the cap would return the matches among the messages it
+// happened to reach and no way to tell that apart from the matches in the
+// mailbox — a wrong answer wearing the shape of a right one, which is
+// worse than no answer. This package already prefers the loud failure
+// twice over: listMailbox refuses a scope the backend cannot speak for
+// rather than quietly answering with unread mail, and CheckFetchBudget
+// refuses an oversized batch rather than trimming it. So the caller is
+// told the count, the cap, and what to do about it: narrow the scope, or
+// give the backend a native search.
+// CheckScanBudget is exported so every layer that can run the scan
+// enforces the same bound: the resilience decorator carries its own copy
+// of the fallback, and a bound only one of them applies is not a bound.
+func CheckScanBudget(ids int, scope Scope) error {
+	if ids > MaxScanMessages {
+		return fmt.Errorf(
+			"%w: %d messages in scope %q exceeds the %d-message scan budget, and this backend has no native search"+
+				" — narrow the search to a folder or a smaller scope, or give the backend a Searcher",
+			ErrScanTooLarge, ids, string(scope), MaxScanMessages)
+	}
+	return nil
 }
 
 // ErrBadID rejects message ids that try to escape the mailbox.

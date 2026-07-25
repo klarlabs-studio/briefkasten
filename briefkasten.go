@@ -76,6 +76,9 @@ const MaxBulkIDs = domain.MaxBulkIDs
 // MaxFetchBytes caps the raw bytes one batched fetch may return in total.
 const MaxFetchBytes = domain.MaxFetchBytes
 
+// MaxSummaryMessages caps how many messages one summary prompt embeds.
+const MaxSummaryMessages = domain.MaxSummaryMessages
+
 // Application types.
 type (
 	// Service is the shared use-case layer; MCP and CLI both call it.

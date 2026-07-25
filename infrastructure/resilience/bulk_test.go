@@ -117,3 +117,26 @@ func TestResilientBulkWithoutCurator(t *testing.T) {
 		t.Error("empty batch accepted")
 	}
 }
+
+// The application layer bounds its own scan fallback, but a bare backend
+// is normally wrapped by Resilient before the service sees it — and this
+// decorator implements ScopedSearcher, so the service takes its
+// native-search branch into the wrapper and never reaches that check.
+// The bound has to hold on the path that actually runs.
+func TestResilientSearchFallbackIsBounded(t *testing.T) {
+	ids := make([]string, domain.MaxScanMessages+1)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("m%d.eml", i)
+	}
+	inner := &stubMailbox{ids: ids, raws: map[string][]byte{}}
+	mb := Wrap(inner, Config{MaxAttempts: 1})
+
+	got, err := mb.SearchScope(t.Context(), domain.ScopeUnread, "anything")
+	if !errors.Is(err, domain.ErrScanTooLarge) {
+		t.Fatalf("SearchScope over an oversized mailbox = %v (err %v), want ErrScanTooLarge", got, err)
+	}
+	// Refused before the scan, not part-way through it.
+	if inner.fetches != 0 {
+		t.Errorf("fetches = %d, want 0 — the mailbox was read before the budget refused it", inner.fetches)
+	}
+}

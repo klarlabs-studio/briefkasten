@@ -108,7 +108,7 @@ Beyond tools, the full MCP surface:
 | Surface | What |
 |---|---|
 | Resources | `email://inbox`, `email://inbox/{id}` (raw RFC 5322), `email://inbox/{id}/headers` (parsed from/to/subject/date/message_id — triage without fetching the body), `email://outbox`, `email://outbox/{id}`, `email://folders` (folders plus the curation destinations and how each was decided), `email://accounts` — read state without spending tool calls; `{id}` serves and completes read and unread ids alike |
-| Prompts | `summarize_inbox(count?)` (embeds up to `count` unread messages, default 20, each truncated at 16 KiB), `draft_reply(id)` (embeds the original — read or unread — truncated at 16 KiB) |
+| Prompts | `summarize_inbox(count?)` (embeds up to `count` unread messages, default 20, capped at 100 and clamped rather than refused, each truncated at 16 KiB), `draft_reply(id)` (embeds the original — read or unread — truncated at 16 KiB) |
 | Annotations | read tools are `readOnlyHint`, `mark_seen` is `idempotentHint`, `config.set` is `destructiveHint` |
 | Instructions | the consumption contract (mark seen only after successful processing) ships as server instructions |
 | **MCP Apps UI** | `ui://briefkasten/inbox` — an interactive inbox (switch between unread/read/all, read a message, mark seen, archive, delete, compose) rendered by hosts supporting the MCP Apps extension; linked from `email.list_unread` and `email.send_status` |
@@ -659,6 +659,20 @@ cmd/briefkasten  composition root; CLI = thin presentation
 
 Human-in-the-loop confirmation lives at the interface layer (MCP
 elicitation, CLI prompt); the shared use case executes after approval.
+
+## Security
+
+Message bodies are written by whoever can send you mail, they reach every
+tool verbatim, and some of those tools send, archive, and delete. That is
+the threat model, and it is why the mutating tools are gated on a human
+rather than on a content filter: an email that *persuades* an agent to
+propose a deletion is expected and caught by the gate; an email that
+causes one *without* the gate is a bug worth reporting.
+
+Report privately — [open a draft
+advisory](https://github.com/klarlabs-studio/briefkasten/security/advisories/new),
+never a public issue or PR. [SECURITY.md](SECURITY.md) has the channels,
+the timelines, and what is and is not in scope.
 
 ## License
 

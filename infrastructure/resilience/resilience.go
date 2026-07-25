@@ -458,6 +458,16 @@ func searchFallback(ctx context.Context, mb domain.Mailbox, scope domain.Scope, 
 	if err != nil {
 		return nil, err
 	}
+	// The same bound the application-layer fallback applies, enforced
+	// again here because this copy is the one that actually runs. A bare
+	// backend is normally wrapped by Resilient before the service sees
+	// it, and this decorator implements ScopedSearcher — so the service
+	// takes its native-search branch into this wrapper and never reaches
+	// its own budget check. A bound only one of two identical scans
+	// applies is not a bound.
+	if err := domain.CheckScanBudget(len(ids), scope); err != nil {
+		return nil, err
+	}
 	needle := []byte(strings.ToLower(query))
 	var out []string
 	for _, id := range ids {
