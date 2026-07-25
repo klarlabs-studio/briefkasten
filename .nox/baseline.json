@@ -1,0 +1,390 @@
+{
+  "schema_version": "1.0.0",
+  "entries": [
+    {
+      "fingerprint": "085f11fddb355fec289c6bcb2fb3f5a4a241b78a5006d9d620563add56a26ef8",
+      "rule_id": "AI-006",
+      "file_path": "infrastructure/mcpserver/prompts.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "c0f57ba78b9238c2cedb0ec389a5adab85404821b5e7abef0e9b2fb03a645b20",
+      "rule_id": "AI-006",
+      "file_path": "infrastructure/mcpserver/prompts.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "23420ae5dc359b9a595185a399a7de2ff1d8282b1a2d86a796f4b037e75f6e9c",
+      "rule_id": "AI-006",
+      "file_path": "infrastructure/mcpserver/prompts.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "8a4c1bb4f1aa009e4483de8ec1bf6f74b89087457dcdc9a8e57c267a69d1fcb2",
+      "rule_id": "AI-006",
+      "file_path": "infrastructure/mcpserver/server.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "d2c6316e58f33aea92a8ea2ff82c9a7553d8705f6cfb73355273ceffd628445b",
+      "rule_id": "DATA-001",
+      "file_path": "application/outbox_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "dfa0df931f9b06372dc6497b78c52c8f845ed7672ce20387335e1b4039ab1e41",
+      "rule_id": "DATA-001",
+      "file_path": "application/outbox_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "216ef847abe2bb01aaa4f28528b8bdf69d55b0e115ae6b7b0c866a7514f96d46",
+      "rule_id": "DATA-001",
+      "file_path": "application/outbox_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "7581183bc652be4ed2c2a081039803cf9a815f99bd7cb78d66ddf11feaa98707",
+      "rule_id": "DATA-001",
+      "file_path": "application/outbox_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "a9c582b3a2396c444630c1cbf63e5aa94ac4e6f256da0c1c1044cff702520c3f",
+      "rule_id": "DATA-001",
+      "file_path": "application/outbox_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "555470afab27d0d83f2b22e5b40f9910beb927c1e662adf0a9f236a8c28018fb",
+      "rule_id": "DATA-001",
+      "file_path": "config_build_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "78d6943ce3f7aabb4a6a74e5e1a1693bb4562d5020ec7fac0134460f12c85a65",
+      "rule_id": "DATA-001",
+      "file_path": "config_secrets_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "a64f7774927d0ddfd9332a15c1696c284f8eeaaef8332c54ac7744b461f13987",
+      "rule_id": "DATA-001",
+      "file_path": "config_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "149a8229c1a5ba76ad17ead885f86678428608843ce2c5f68547985da3b15fb8",
+      "rule_id": "DATA-001",
+      "file_path": "infrastructure/auth/oauth_more_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "1a00765ef1a8d9c336dbfd0a8a326ade3e0fe9bdb18d2a65a5c770223d117c57",
+      "rule_id": "DATA-001",
+      "file_path": "infrastructure/auth/oauth_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "049558a06febb54a5b1bfa0995ca0b525f5d1bf7b8c4a770acba33664ebf3d79",
+      "rule_id": "DATA-001",
+      "file_path": "infrastructure/auth/oauth_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "f142645005a3782681023b7c27f507c93bbfbffd0bd8a2e0eb6a73be35c53e29",
+      "rule_id": "DATA-001",
+      "file_path": "infrastructure/auth/oauth_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "016dec942e8c56cdbd254e23f18eb23003a8065bc7ad939aa2ecf735f4cadb23",
+      "rule_id": "DATA-001",
+      "file_path": "infrastructure/auth/oauth_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "302a395125bb487a1e78adfbd0a55509b4c51a80b25b8431add0266cf04c5b74",
+      "rule_id": "DATA-001",
+      "file_path": "infrastructure/imap/imap_external_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "3206ca417289baa9394ce8fe44165f057d0b3d4d8c7f20bc110c106cb5f56f3e",
+      "rule_id": "DATA-001",
+      "file_path": "infrastructure/imap/imap_external_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "d5e2e1f91e906da9b4ab55749db02c0b2a186559e6b64f79de51fb2a716aeffe",
+      "rule_id": "DATA-001",
+      "file_path": "infrastructure/imap/imap_external_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "a1e9cee41c21a65772942f7c98e6c008cd26a6a5da514e3ebd44a4e4c2be573b",
+      "rule_id": "DATA-001",
+      "file_path": "infrastructure/maildir/outboxstore_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "abf666573c5c2a15df7401e2ae30e988893b97739f639c32beaeffec4beabe9e",
+      "rule_id": "DATA-001",
+      "file_path": "infrastructure/maildir/sender_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "5bf6a3b2fe2898f5cd842df879cf261cb3c4f0a356ef854a2a7742c8081ab260",
+      "rule_id": "DATA-001",
+      "file_path": "infrastructure/maildir/sender_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "a74e008d4992c3575805a347a8e0beb774cdf2d5f767b354b9b9fb823f3e4b16",
+      "rule_id": "DATA-001",
+      "file_path": "infrastructure/maildir/sender_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "583f7366e87e319973ee0370fbda86310cb134ee044c4f27a9e584127f08446f",
+      "rule_id": "DATA-001",
+      "file_path": "infrastructure/mcpserver/headers_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "c60e5d7b1e639cb0bd83f3edb88e848f639af9e7380d11a9c4e616b621e40c68",
+      "rule_id": "DATA-001",
+      "file_path": "infrastructure/mcpserver/headers_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "d0870f46087b0ad4114684639d497f5399a1c29e10995d5ac581a6711ba3ab15",
+      "rule_id": "DATA-001",
+      "file_path": "infrastructure/mcpserver/prompts_more_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "83ba42a336f4fd85b12a3dc352a7fc66adeff6783c1087227e6b5726e3dfe666",
+      "rule_id": "DATA-001",
+      "file_path": "infrastructure/mcpserver/send_gate_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "b00d3fb4237f166cc158673932e62add87682139b6e00cb9d681ef0c0eddd5bf",
+      "rule_id": "DATA-001",
+      "file_path": "infrastructure/mcpserver/server_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "52535e1b0778f4ca5327a40567525c53651d10aa2ec1f59e2791e99d9ffa3a55",
+      "rule_id": "DATA-001",
+      "file_path": "infrastructure/mcpserver/server_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "4e1c18c5c646aedc0a677bdc4a8687b02d092d445e13a28cb472637a5b64759c",
+      "rule_id": "DATA-001",
+      "file_path": "infrastructure/smtp/oauth_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "4cc01ed625cbbb6c768fa193f1cfe0127e0d20b5229060d2265602816857e055",
+      "rule_id": "DATA-001",
+      "file_path": "infrastructure/smtp/smtp_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "21a83e72477abf8863c16ff3f35d7e8314553f2802c6dce4b26ad8de7fc67d2a",
+      "rule_id": "DATA-001",
+      "file_path": "infrastructure/smtp/smtp_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "adbca213a5ae48c8835c8fec78fbd399ab133af607f419543fefd47bf8686b98",
+      "rule_id": "DATA-001",
+      "file_path": "infrastructure/smtp/smtp_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "f70625aa554fa90121454c9925b9f3cfe5556e91b5c923a18c472595dabfc2c8",
+      "rule_id": "DATA-001",
+      "file_path": "runtime_accounts_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "c37f5fbf6a9e0d41ef8a7146e4276f97e4ed67a80612bc104baa671c68040435",
+      "rule_id": "DATA-001",
+      "file_path": "runtime_profile_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "123eff2f0bdcf38ef123277fc38008233351a5310172473d641ff3c60218ad60",
+      "rule_id": "DATA-001",
+      "file_path": "runtime_profile_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "2c483e9c2851d3e45cfca4ac038ac0267e0cc7057f3d11c875cd929a5bbf4a36",
+      "rule_id": "DATA-001",
+      "file_path": "runtime_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "b1931e23ec7907f9cc49ef03ee13218f36cf750ec9289b1248d31da60effc776",
+      "rule_id": "DATA-001",
+      "file_path": "runtime_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "51ac7b0d02f9df1b258f668c6e430f7699d08229c02a1af32efd6993ce20b597",
+      "rule_id": "DATA-005",
+      "file_path": "infrastructure/mcpserver/basicauth_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "39d8a68383bb527c23cdaf140838ad8d004906951e15a1dad873443a335078af",
+      "rule_id": "DATA-005",
+      "file_path": "infrastructure/mcpserver/basicauth_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "4159a99e077d09a16b019baefda5014b1d0aba8752c0692473db4a06e79052f5",
+      "rule_id": "DATA-005",
+      "file_path": "infrastructure/smtp/smtp_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "e1554234f2648e228852b17f658105d9b0412eb846c77eeb346bc59f1bf71fa3",
+      "rule_id": "IAC-306",
+      "file_path": ".goreleaser.yaml",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "7e7d3ded762fdceadaa320b6d044b16529d836976308d3378b99cee307538f4d",
+      "rule_id": "SEC-080",
+      "file_path": "cmd/briefkasten/cli.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "dc5b48a45c48168484d4efdb60ae2705ac37dc7f6be1f53ea5c9c319a5ebb999",
+      "rule_id": "SEC-080",
+      "file_path": "cmd/briefkasten/hashpw_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "56432eb90473a0ef98a7a3953a3fb3f3ceda53e996e516b469a4b2780be2868b",
+      "rule_id": "SEC-080",
+      "file_path": "cmd/briefkasten/hashpw_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "f36aa8269bcd26ec66dedc814bdaee1856499a7f30afebb2300bac049e1deeda",
+      "rule_id": "SEC-082",
+      "file_path": "infrastructure/auth/oauth_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "f40479f4a7913e758bf6c1f725f5f03a76bdfaf575822b73ab9572303d985844",
+      "rule_id": "SEC-083",
+      "file_path": "infrastructure/mcpserver/basicauth.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "5468e3eced5712f6642b8cadb35a4446235e5e2588796e33ce5802211da22c4d",
+      "rule_id": "SEC-163",
+      "file_path": "config.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "675bb9a2e6d471d453efb0373915e851653cdcab9a7971859d9e6488b0927b32",
+      "rule_id": "SEC-163",
+      "file_path": "config.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "955854c0a431f7b466429486683ee7137d002eee3ac6be99fa4e3ac3508a2a7d",
+      "rule_id": "SEC-163",
+      "file_path": "config.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "84acfff2ee66d1259591be806ed8254297a089f4edd6e3fd8bbb182873c2015f",
+      "rule_id": "SEC-163",
+      "file_path": "config_secrets_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "0843ec1aaab07ec7442a03d48a175c4e8f592439967deed9399f49bae1d1b162",
+      "rule_id": "SEC-163",
+      "file_path": "config_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "eaabd46aaecff9a116654772524e34f9f5c20ecc79501bd6dfd4e3802d658fd4",
+      "rule_id": "SEC-163",
+      "file_path": "config_test.go",
+      "severity": "medium",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "5c0a9e142e693d1304ef4735caa6ba1ffd5cd6ae048b27a797674b60c7330dea",
+      "rule_id": "VULN-001",
+      "file_path": "go.mod",
+      "severity": "info",
+      "created_at": "2026-07-25T19:23:44.449088Z"
+    }
+  ]
+}
