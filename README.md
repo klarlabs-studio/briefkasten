@@ -12,18 +12,19 @@ contract instead of binding to IMAP libraries:
 | `email.list` | `{"scope?": "unread\|read\|all", "limit?"}` → `{"ids": ["..."], "total": N, "scope": "unread"}` — `scope` defaults to `unread` |
 | `email.list_unread` | `{"limit?"}` → `{"ids": ["..."], "total": N}` — `email.list` with `scope=unread` |
 | `email.fetch` | `{"id": "..."}` → `{"raw": "<base64 RFC 5322>"}` — read or unread; never sets `\Seen` |
-| `email.mark_seen` | `{"id": "..."}` → `{"ok": true}` — message won't be listed again |
+| `email.mark_seen` | `{"id": "..."}` → `{"ok": true}` — message won't be listed again; idempotent, so re-acknowledging read mail is not an error |
 | `email.send`* | `{"to": [...], "subject", "body", "html_body?", "attachments?": [{"filename", "content_type", "content": "<base64>"}]}` → `{"id", "state": "queued"}` — attachments ≤ 10 MiB each, ≤ 25 MiB per message |
 | `email.send_status`* | `{"id"}` → `{"state": "queued\|sending\|sent\|failed", "attempts", "error?"}` |
 | `email.retry`* | `{"id"}` → `{"id", "state": "queued"}` — re-queue a failed send |
 | `email.search` | `{"query", "scope?", "folder?", "account?", "limit?"}` → `{"ids": [...], "total": N, "scope": "unread"}` — case-insensitive; IMAP searches server-side |
-| `email.archive` | `{"id", "confirm?"}` → `{"ok": true}` — **human-confirmed** (elicitation or confirm flag); soft: filed to Archive, never destroyed |
-| `email.delete` | `{"id", "confirm?"}` → `{"ok": true}` — **human-confirmed**; soft delete to Trash, never expunged |
+| `email.archive` | `{"id", "confirm?"}` → `{"ok": true}` — **human-confirmed** (elicitation or confirm flag); soft: filed to Archive, never destroyed; read or unread |
+| `email.delete` | `{"id", "confirm?"}` → `{"ok": true}` — **human-confirmed**; soft delete to Trash, never expunged; read or unread |
 
-`email.list`, `email.list_unread`, `email.fetch`, `email.mark_seen`, and
-`email.search` accept optional `folder` (see `email://folders`) and
-`account` (see `email://accounts`) arguments. `limit` caps the ids
-returned; `total` always reports the full count.
+Every mailbox tool — `email.list`, `email.list_unread`, `email.fetch`,
+`email.mark_seen`, `email.search`, `email.archive`, and `email.delete` —
+accepts optional `folder` (see `email://folders`) and `account` (see
+`email://accounts`) arguments. `limit` caps the ids returned; `total`
+always reports the full count.
 
 ### Scope: read mail, not just unread
 
@@ -42,17 +43,32 @@ the file in place), so looking back at processed mail cannot disturb the
 backlog. A backend that cannot tell read from unread mail rejects a
 wider scope with an error rather than silently returning unread ids.
 
+An id carries no read state with it, so **every action applies to every
+scope**: an id from a `read` or `all` listing can be fetched, marked
+seen, archived, or deleted exactly like one from the backlog — no
+re-listing, no unread-only privilege.
+
+| Action on a read message | Behaviour |
+|---|---|
+| `email.fetch` | serves it; never sets `\Seen` |
+| `email.mark_seen` | succeeds and changes nothing (idempotent) |
+| `email.archive` / `email.delete` | soft-moves it, human-confirmed like any curation |
+
+An unknown id is rejected as a bad id, not silently accepted — so an
+`{"ok": true}` from `archive` or `delete` means a message actually
+moved.
+
 \* Sending registers only when an outbox is configured.
 
 Beyond tools, the full MCP surface:
 
 | Surface | What |
 |---|---|
-| Resources | `email://inbox`, `email://inbox/{id}` (raw RFC 5322), `email://inbox/{id}/headers` (parsed from/to/subject/date/message_id — triage without fetching the body), `email://outbox`, `email://outbox/{id}`, `email://folders`, `email://accounts` — read state without spending tool calls; `{id}` completes from live unread ids |
-| Prompts | `summarize_inbox(count?)` (embeds up to `count` unread messages, default 20, each truncated at 16 KiB), `draft_reply(id)` (embeds the original, truncated at 16 KiB) |
+| Resources | `email://inbox`, `email://inbox/{id}` (raw RFC 5322), `email://inbox/{id}/headers` (parsed from/to/subject/date/message_id — triage without fetching the body), `email://outbox`, `email://outbox/{id}`, `email://folders`, `email://accounts` — read state without spending tool calls; `{id}` serves and completes read and unread ids alike |
+| Prompts | `summarize_inbox(count?)` (embeds up to `count` unread messages, default 20, each truncated at 16 KiB), `draft_reply(id)` (embeds the original — read or unread — truncated at 16 KiB) |
 | Annotations | read tools are `readOnlyHint`, `mark_seen` is `idempotentHint`, `config.set` is `destructiveHint` |
 | Instructions | the consumption contract (mark seen only after successful processing) ships as server instructions |
-| **MCP Apps UI** | `ui://briefkasten/inbox` — an interactive inbox (list, read, mark seen, compose) rendered by hosts supporting the MCP Apps extension; linked from `email.list_unread` and `email.send_status` |
+| **MCP Apps UI** | `ui://briefkasten/inbox` — an interactive inbox (switch between unread/read/all, read a message, mark seen, archive, delete, compose) rendered by hosts supporting the MCP Apps extension; linked from `email.list_unread` and `email.send_status` |
 
 Built on [mcp-go](https://github.com/klarlabs-studio/mcp-go).
 
@@ -136,6 +152,10 @@ Archive and delete are deliberately guarded, everywhere:
   `.archive`/`.trash` sub-maildirs; IMAP copies into Archive/Trash and
   marks the original seen — deliberately not `MOVE`, which expunges.
   Briefkasten never destroys data.
+- **Read mail is no exception**: widening the scope widens what an agent
+  can *see*, never what it may do unattended. Curating an
+  already-processed message passes through the same gate as curating the
+  backlog, and a stale id is rejected rather than reported as moved.
 
 ## Configure
 
@@ -424,6 +444,10 @@ c.Initialize(ctx)
 res, _ := c.CallTool(ctx, "email.list_unread", map[string]any{})
 // fetch each id, ingest, then email.mark_seen — only after success,
 // so failures stay unread for retry.
+
+// Looking back at processed mail is the same call with a scope, and the
+// ids it returns act like any other: fetch, archive, or delete them.
+old, _ := c.CallTool(ctx, "email.list", map[string]any{"scope": "read"})
 ```
 
 Instead of polling, subscribe to `email://inbox` (mcp-go ≥ 1.17 supports
@@ -451,7 +475,13 @@ acknowledge. The tool contract stays identical for every consumer.
 ## Design notes
 
 - **Mark-seen is the consumer's acknowledgement.** Briefkasten never deletes;
-  backends decide what "seen" means (maildir move, IMAP flag, …).
+  backends decide what "seen" means (maildir move, IMAP flag, …). It is
+  idempotent — acknowledging read mail again is a no-op, not an error.
+- **Read state filters, it does not gate.** `scope` narrows what a
+  listing returns; it never decides what an id may be used for. Every
+  action resolves an id across the whole mailbox, so the only difference
+  between curating fresh and processed mail is which listing surfaced
+  it. Backends implementing `Curator` must honour that.
 - **Ids are opaque** to consumers and validated by backends (the dir backend
   rejects path traversal).
 - **Raw bytes, not parsed mail.** Parsing/MIME policy belongs to the

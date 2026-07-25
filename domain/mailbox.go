@@ -14,9 +14,11 @@ import (
 type Mailbox interface {
 	// ListUnread returns the ids of messages not yet marked seen.
 	ListUnread() ([]string, error)
-	// Fetch returns the raw message bytes for an id.
+	// Fetch returns the raw message bytes for an id, read or unread.
 	Fetch(id string) ([]byte, error)
 	// MarkSeen marks a message as processed so it is not listed again.
+	// It is idempotent: acknowledging a message that is already read
+	// succeeds and changes nothing.
 	MarkSeen(id string) error
 }
 
@@ -85,13 +87,19 @@ type FolderMailbox interface {
 }
 
 // Curator is an optional Mailbox capability: human curation of the
-// unread backlog. Both operations are soft moves — Archive files the
-// message away, Delete moves it to trash. Nothing is ever expunged;
-// data is never destroyed.
+// mailbox. Both operations are soft moves — Archive files the message
+// away, Delete moves it to trash. Nothing is ever expunged; data is
+// never destroyed.
+//
+// Curation is not restricted to the unread backlog: an id is an id,
+// whatever its read state. Tidying mail that was processed weeks ago is
+// exactly what a human reaches for these operations to do, so a backend
+// that resolves ids only within the unread set does not satisfy this
+// port.
 type Curator interface {
-	// Archive moves an unread message to the archive.
+	// Archive moves a message — read or unread — to the archive.
 	Archive(id string) error
-	// Delete moves an unread message to the trash.
+	// Delete moves a message — read or unread — to the trash.
 	Delete(id string) error
 }
 

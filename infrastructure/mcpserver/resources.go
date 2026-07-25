@@ -12,6 +12,7 @@ import (
 	"go.klarlabs.de/mcp/server"
 
 	"go.klarlabs.de/briefkasten/application"
+	"go.klarlabs.de/briefkasten/domain"
 )
 
 // registerResources exposes mailbox and outbox state as MCP resources —
@@ -31,7 +32,7 @@ func registerResources(srv *mcp.Server, svc *application.Service, ob *applicatio
 
 	srv.Resource("email://inbox/{id}").
 		Name("Inbox message").
-		Description("Raw RFC 5322 message by unread id.").
+		Description("Raw RFC 5322 message by id — read or unread; reading never marks a message seen.").
 		MimeType("message/rfc822").
 		Handler(func(_ context.Context, uri string, params map[string]string) (*server.ResourceContent, error) {
 			raw, err := svc.Read("", "", params["id"])
@@ -43,7 +44,7 @@ func registerResources(srv *mcp.Server, svc *application.Service, ob *applicatio
 
 	srv.Resource("email://inbox/{id}/headers").
 		Name("Inbox message headers").
-		Description("Parsed headers (from, to, subject, date, message_id) by unread id — triage without fetching the full message.").
+		Description("Parsed headers (from, to, subject, date, message_id) by id, read or unread — triage without fetching the full message.").
 		MimeType("application/json").
 		Handler(func(_ context.Context, uri string, params map[string]string) (*server.ResourceContent, error) {
 			raw, err := svc.Read("", "", params["id"])
@@ -55,17 +56,7 @@ func registerResources(srv *mcp.Server, svc *application.Service, ob *applicatio
 
 	srv.ResourceCompletion("email://inbox/{id}").
 		Handler(func(_ context.Context, _ server.CompletionRef, arg server.CompletionArgument) (*server.CompletionResult, error) {
-			ids, err := svc.ListUnread("", "")
-			if err != nil {
-				return nil, err
-			}
-			var out []string
-			for _, id := range ids {
-				if strings.HasPrefix(id, arg.Value) {
-					out = append(out, id)
-				}
-			}
-			return &server.CompletionResult{Values: out, Total: len(out)}, nil
+			return completeMessageIDs(svc, arg.Value)
 		})
 
 	srv.Resource("email://folders").
@@ -117,6 +108,30 @@ func registerResources(srv *mcp.Server, svc *application.Service, ob *applicatio
 			}
 			return jsonResource(uri, msg)
 		})
+}
+
+// completeMessageIDs suggests message ids beginning with prefix, drawn
+// from the whole mailbox: the surfaces that complete an id — the inbox
+// resource, the draft_reply prompt — serve read and unread mail alike.
+//
+// A backend that cannot scope falls back to the unread set. That is safe
+// here in a way it never is for email.list: these are typing hints, not
+// an answer about what is unread, so the fallback offers fewer
+// suggestions rather than passing read mail off as unread.
+func completeMessageIDs(svc *application.Service, prefix string) (*server.CompletionResult, error) {
+	ids, err := svc.List("", "", domain.ScopeAll)
+	if err != nil {
+		if ids, err = svc.ListUnread("", ""); err != nil {
+			return nil, err
+		}
+	}
+	var out []string
+	for _, id := range ids {
+		if strings.HasPrefix(id, prefix) {
+			out = append(out, id)
+		}
+	}
+	return &server.CompletionResult{Values: out, Total: len(out)}, nil
 }
 
 // parseHeaders extracts the triage-relevant headers from a raw RFC 5322

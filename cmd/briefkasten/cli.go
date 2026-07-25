@@ -281,6 +281,10 @@ serve [--stdio] [--config FILE]   MCP server; --stdio serves over stdin/stdout
 list and search take --scope unread (default), read, or all. Listing and
 reading never change a message's state.
 
+read, seen, archive, and delete take an id from any scope: a message that
+was processed long ago acts exactly like one still in the backlog. seen
+is idempotent — re-acknowledging read mail is not an error.
+
 Curation is soft: archive files away, delete moves to trash — nothing is
 ever expunged. Both prompt for confirmation unless --yes.
 `, cmd)

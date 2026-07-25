@@ -4,6 +4,7 @@ package maildir
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -96,7 +97,10 @@ func (m *Mailbox) Fetch(id string) ([]byte, error) {
 	return nil, fmt.Errorf("briefkasten: fetch %q: %w", id, firstErr)
 }
 
-// MarkSeen moves a message from new/ to cur/.
+// MarkSeen moves a message from new/ to cur/. Acknowledging a message
+// that is already read succeeds without doing anything — the tool is
+// idempotent, and an agent re-acknowledging its work is not an error.
+// An id in neither directory is a bad id, not a backend fault.
 func (m *Mailbox) MarkSeen(id string) error {
 	from, err := m.safePath("new", id)
 	if err != nil {
@@ -107,7 +111,13 @@ func (m *Mailbox) MarkSeen(id string) error {
 		return err
 	}
 	if err := os.Rename(from, to); err != nil {
-		return fmt.Errorf("briefkasten: mark seen %q: %w", id, err)
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("briefkasten: mark seen %q: %w", id, err)
+		}
+		if _, statErr := os.Stat(to); statErr == nil {
+			return nil
+		}
+		return fmt.Errorf("%w: %q", domain.ErrBadID, id)
 	}
 	return nil
 }
@@ -222,12 +232,12 @@ func (d *Mailbox) moveTo(sub, id string) error {
 	return nil
 }
 
-// Archive moves an unread message to .archive/new — out of the backlog,
-// never destroyed.
+// Archive moves a message — read or unread — to .archive/new: out of
+// the backlog, never destroyed.
 func (d *Mailbox) Archive(id string) error { return d.moveTo(".archive", id) }
 
-// Delete moves an unread message to .trash/new — a soft delete; real
-// removal stays a human decision outside briefkasten.
+// Delete moves a message — read or unread — to .trash/new: a soft
+// delete; real removal stays a human decision outside briefkasten.
 func (d *Mailbox) Delete(id string) error { return d.moveTo(".trash", id) }
 
 var _ domain.Curator = (*Mailbox)(nil)

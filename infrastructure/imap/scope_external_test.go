@@ -96,3 +96,58 @@ func TestIMAPSearchScope(t *testing.T) {
 		t.Fatalf("Search(Bescheid) = %v, want none (it is read)", hits)
 	}
 }
+
+// Curation over IMAP is UID-based, so a message that is already read
+// archives exactly like an unread one — and lands in Archive.
+func TestIMAPArchiveReadMessage(t *testing.T) {
+	mb := newTestIMAPMailbox(t, startIMAPServer(t))
+
+	unread, err := mb.List(domain.ScopeUnread)
+	if err != nil || len(unread) != 1 {
+		t.Fatalf("List(unread) = %v, err %v", unread, err)
+	}
+	id := unread[0]
+	if err := mb.MarkSeen(id); err != nil {
+		t.Fatalf("MarkSeen: %v", err)
+	}
+
+	if err := mb.Archive(id); err != nil {
+		t.Fatalf("Archive read message: %v", err)
+	}
+
+	archive, err := mb.InFolder("Archive")
+	if err != nil {
+		t.Fatalf("InFolder(Archive): %v", err)
+	}
+	scoped, ok := archive.(domain.ScopedMailbox)
+	if !ok {
+		t.Fatal("folder-scoped IMAP mailbox lost its scoped listing")
+	}
+	// COPY carries the flags across, so the filed message is read —
+	// scope=all is the only listing that sees the whole folder.
+	filed, err := scoped.List(domain.ScopeAll)
+	if err != nil {
+		t.Fatalf("list Archive: %v", err)
+	}
+	if len(filed) != 1 {
+		t.Fatalf("Archive holds %v, want the filed message", filed)
+	}
+}
+
+// A stale id must not report a soft move that never happened: IMAP
+// answers OK to COPY of a UID it does not hold, so the backend checks
+// the message is there before claiming it moved.
+func TestIMAPCurateUnknownUIDIsBadID(t *testing.T) {
+	mb := newTestIMAPMailbox(t, startIMAPServer(t))
+
+	for name, op := range map[string]func(string) error{"Archive": mb.Archive, "Delete": mb.Delete} {
+		err := op("99999")
+		if err == nil {
+			t.Errorf("%s of an unknown uid succeeded, want an error", name)
+			continue
+		}
+		if !errors.Is(err, domain.ErrBadID) {
+			t.Errorf("%s error = %v, want ErrBadID", name, err)
+		}
+	}
+}

@@ -83,7 +83,8 @@ func (s *Service) Read(account, folder, id string) ([]byte, error) {
 	return box.Fetch(id)
 }
 
-// MarkSeen acknowledges a processed message.
+// MarkSeen acknowledges a processed message. Idempotent: a message that
+// is already read stays read and the call succeeds.
 func (s *Service) MarkSeen(account, folder, id string) error {
 	box, err := s.Resolve(account, folder)
 	if err != nil {
@@ -140,8 +141,9 @@ func (s *Service) Accounts() []string {
 	return names
 }
 
-// Archive files an unread message away — soft, never destroyed. The
-// caller must have obtained human confirmation.
+// Archive files a message away — soft, never destroyed. Read and unread
+// messages curate alike; ids come from any scope of List or SearchScope.
+// The caller must have obtained human confirmation.
 func (s *Service) Archive(account, folder, id string) error {
 	cu, err := s.curator(account, folder)
 	if err != nil {
@@ -150,8 +152,9 @@ func (s *Service) Archive(account, folder, id string) error {
 	return cu.Archive(id)
 }
 
-// Delete moves an unread message to trash — soft delete, never expunged.
-// The caller must have obtained human confirmation.
+// Delete moves a message to trash — soft delete, never expunged. Read
+// and unread messages curate alike. The caller must have obtained human
+// confirmation.
 func (s *Service) Delete(account, folder, id string) error {
 	cu, err := s.curator(account, folder)
 	if err != nil {
