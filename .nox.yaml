@@ -30,3 +30,15 @@ scan:
 plugins:
   required:
     - nox/taint-analysis
+    # Go reachability. Without it an OSV hit is just "this module is in the
+    # graph", which reads as urgent whether or not the vulnerable symbol is
+    # ever called — three advisories looked actionable here on 2026-07-25 and
+    # none were. With it, CI answers REACH-001 (never called) or REACH-002
+    # (reachable) and the difference between a blocked release and a note is
+    # visible without a second tool.
+    #
+    # Requires >= 0.8.1: earlier builds answered "unsupported ecosystem go"
+    # (the plugin matched OSV's ecosystem spellings while nox tags findings
+    # with its own), and 0.8.0 was built with a Go older than this module's,
+    # which x/vuln cannot load.
+    - nox/reachability
