@@ -42,9 +42,21 @@
     border-left: 3px solid var(--green);
     padding: 0.7rem 0.9rem; margin-bottom: 0.6rem;
   }
+  .msg.read { border-left-color: var(--rule); }
   .msg header { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
   .msg .from { color: var(--ink-soft); font-size: 0.78rem; }
   .msg .subject { font-weight: 600; }
+  .msg .actions { display: flex; gap: 0.4rem; flex-shrink: 0; }
+  .badge {
+    font-size: 0.66rem; letter-spacing: 0.08em; text-transform: uppercase;
+    border: 1px solid var(--rule); padding: 0.05rem 0.35rem; margin-right: 0.4rem;
+    color: var(--ink-soft);
+  }
+  .badge.unread { border-color: var(--green); color: var(--green); }
+  select {
+    font: inherit; font-size: 0.78rem; background: transparent;
+    border: 1px solid var(--ink); color: var(--ink); padding: 0.3rem 0.5rem;
+  }
   .msg pre {
     font: 0.78rem/1.5 ui-monospace, Menlo, monospace;
     white-space: pre-wrap; color: var(--ink-soft);
@@ -53,6 +65,10 @@
   }
   .empty, .error { padding: 1rem 0; color: var(--ink-soft); }
   .error { color: var(--red); }
+  .msg .error { padding: 0.4rem 0 0; font-size: 0.78rem; }
+  .msg .error:empty { display: none; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button:disabled:hover { background: none; color: var(--ink); }
   form.compose {
     background: var(--card); border: 1px solid var(--rule);
     padding: 0.9rem; margin-top: 1rem; display: grid; gap: 0.5rem;
@@ -68,9 +84,14 @@
 </head>
 <body>
   <h1>Briefkasten<span style="color:var(--green)">.</span></h1>
-  <p class="sub">Mailbox over MCP — unread messages, acknowledged only after you mark them.</p>
+  <p class="sub">Mailbox over MCP — acknowledged only after you mark them. Archive and delete are soft moves: nothing is ever destroyed.</p>
 
   <div class="bar">
+    <select id="scope" aria-label="Which messages to show">
+      <option value="unread">Unread</option>
+      <option value="read">Read</option>
+      <option value="all">All</option>
+    </select>
     <button id="refresh">Refresh</button>
     <span class="status" id="status"></span>
   </div>
@@ -102,7 +123,12 @@ window.addEventListener('message', (ev) => {
   }
 });
 
-function callTool(name, args) {
+// Reads answer straight away; archive, delete, and send are gated on a
+// human confirming in the host, so they get room for someone to decide.
+const READ_TIMEOUT = 8000;
+const CONFIRM_TIMEOUT = 120000;
+
+function callTool(name, args, timeoutMs) {
   return new Promise((resolve, reject) => {
     const id = 'ui-' + ++seq;
     pending.set(id, { resolve, reject });
@@ -115,7 +141,7 @@ function callTool(name, args) {
         pending.delete(id);
         reject(new Error('host bridge unavailable'));
       }
-    }, 8000);
+    }, timeoutMs || READ_TIMEOUT);
   });
 }
 
@@ -133,33 +159,79 @@ function header(raw, name) {
   return m ? m[1].trim() : '';
 }
 
+const EMPTY = {
+  unread: 'Inbox clear — nothing unread.',
+  read: 'Nothing read yet.',
+  all: 'Mailbox empty.',
+};
+
+// action wires a button to a tool call over one message. Archive and
+// delete carry no confirm flag: the host elicits the human, which is the
+// whole point of the gate — the UI must not answer it on their behalf.
+function action(label, tool, id, row) {
+  const btn = document.createElement('button');
+  btn.textContent = label;
+  btn.onclick = async () => {
+    const buttons = row.querySelectorAll('button');
+    buttons.forEach((b) => (b.disabled = true));
+    try {
+      await callTool(tool, { id }, tool === 'email.mark_seen' ? READ_TIMEOUT : CONFIRM_TIMEOUT);
+      refresh();
+    } catch (e) {
+      buttons.forEach((b) => (b.disabled = false));
+      const note = row.querySelector('.error');
+      note.textContent = e.message;
+    }
+  };
+  return btn;
+}
+
 async function refresh() {
   const list = document.getElementById('list');
   const status = document.getElementById('status');
+  const scope = document.getElementById('scope').value;
   status.textContent = 'loading…';
   list.innerHTML = '';
   try {
-    const { ids } = toolJSON(await callTool('email.list_unread'));
-    status.textContent = ids.length + ' unread';
+    const { ids, total } = toolJSON(await callTool('email.list', { scope }));
+    // Under scope=all a message's state is not implied by the listing,
+    // so ask which ids are still unread rather than guessing.
+    let unread = new Set(ids);
+    if (scope === 'read') {
+      unread = new Set();
+    } else if (scope === 'all') {
+      unread = new Set(toolJSON(await callTool('email.list', { scope: 'unread' })).ids);
+    }
+    status.textContent = total + ' ' + (scope === 'all' ? 'messages' : scope);
     if (!ids.length) {
-      list.innerHTML = '<p class="empty">Inbox clear — nothing unread.</p>';
+      list.replaceChildren(
+        Object.assign(document.createElement('p'), { className: 'empty', textContent: EMPTY[scope] }),
+      );
       return;
     }
     for (const id of ids.slice(0, 10)) {
       const { raw: b64 } = toolJSON(await callTool('email.fetch', { id }));
       const raw = atob(b64);
+      const isUnread = unread.has(id);
       const el = document.createElement('article');
-      el.className = 'msg';
+      el.className = isUnread ? 'msg' : 'msg read';
       el.innerHTML =
-        '<header><div><div class="subject"></div><div class="from"></div></div>' +
-        '<button>Mark seen</button></header><pre></pre>';
-      el.querySelector('.subject').textContent = header(raw, 'Subject') || '(no subject)';
+        '<header><div><div class="subject"><span class="badge"></span></div><div class="from"></div></div>' +
+        '<div class="actions"></div></header><pre></pre><p class="error"></p>';
+      const badge = el.querySelector('.badge');
+      badge.className = isUnread ? 'badge unread' : 'badge';
+      badge.textContent = isUnread ? 'unread' : 'read';
+      el.querySelector('.subject').append(header(raw, 'Subject') || '(no subject)');
       el.querySelector('.from').textContent = header(raw, 'From') + ' · ' + id;
       el.querySelector('pre').textContent = raw.split(/\r?\n\r?\n/).slice(1).join('\n\n').trim();
-      el.querySelector('button').onclick = async () => {
-        await callTool('email.mark_seen', { id });
-        refresh();
-      };
+      const actions = el.querySelector('.actions');
+      if (isUnread) {
+        actions.appendChild(action('Mark seen', 'email.mark_seen', id, el));
+      }
+      // Curation reaches read mail too — the backend resolves an id
+      // whatever its state, so both buttons stay on every row.
+      actions.appendChild(action('Archive', 'email.archive', id, el));
+      actions.appendChild(action('Delete', 'email.delete', id, el));
       list.appendChild(el);
     }
   } catch (e) {
@@ -169,6 +241,7 @@ async function refresh() {
 }
 
 document.getElementById('refresh').onclick = refresh;
+document.getElementById('scope').onchange = refresh;
 document.getElementById('compose').onsubmit = async (ev) => {
   ev.preventDefault();
   const sendStatus = document.getElementById('sendStatus');
@@ -178,7 +251,7 @@ document.getElementById('compose').onsubmit = async (ev) => {
       to: document.getElementById('to').value.split(',').map((s) => s.trim()).filter(Boolean),
       subject: document.getElementById('subject').value,
       body: document.getElementById('body').value,
-    }));
+    }, CONFIRM_TIMEOUT));
     sendStatus.textContent = 'queued: ' + res.id;
     ev.target.reset();
   } catch (e) {

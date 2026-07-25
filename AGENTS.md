@@ -1,4 +1,4 @@
-# AGENTS.md — last updated: 2026-07-19
+# AGENTS.md — last updated: 2026-07-25
 # Keep under 400 lines. Split overflow to memory/ files.
 
 ## Working Style
@@ -16,7 +16,7 @@ including claims from subagents and from memory.
 Company: klarlabs — open-source Go tooling.
 What we're building: briefkasten, a mailbox served over MCP so agents can read,
 search, curate, and send mail through one contract instead of binding to IMAP.
-Phase: maintenance / hardening. Released and versioned; v0.20.1 current.
+Phase: maintenance / hardening. Released and versioned; v0.21.0 current.
 Stack: Go, hexagonal architecture, go-imap v2, go.klarlabs.de/mcp, goreleaser,
 warden commit gate, coverctl coverage gates.
 
@@ -31,6 +31,11 @@ Never: add a capability to `domain/` without also forwarding it in
 behind a decorator.
 Never: let a backend silently substitute unread mail when a wider scope is
 unsupported — error instead.
+Never: let read state gate an action. `scope` filters what a listing returns; it
+never decides what an id may be used for. Fetch, mark-seen, archive, and delete
+all resolve an id across the whole mailbox.
+Never: report a curation success a backend did not perform — IMAP answers OK to
+COPY of a UID it does not hold, so verify presence before claiming a move.
 Always: gate a new mutating MCP tool through `mcpserver.ConfirmAction` and mark
 it `Destructive()`. Message content reaches every tool.
 Always: assert security fixes against observable output (bytes on disk, the tool
@@ -72,6 +77,10 @@ warden's pre-push gate runs exactly these, so failing locally is faster.
   no current caller changes behaviour.
 - 2026-07-19: Track secret provenance at the source rather than comparing values
   at save time — precision is what stops the fix deleting real configuration.
+- 2026-07-25: Read state filters, it does not gate — every action resolves an id
+  across the whole mailbox, so the only difference between curating fresh and
+  processed mail is which listing surfaced it. The confirmation gate is what
+  restrains destructive work, not the read flag.
 
 ## Active Patterns
 - "brief me" → /brief (reads ./memory/status.md)

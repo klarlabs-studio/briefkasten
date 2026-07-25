@@ -11,7 +11,7 @@ import (
 func registerUI(srv *mcp.Server) {
 	srv.Resource(InboxUIResourceURI).
 		Name("Briefkasten inbox").
-		Description("Interactive inbox: list unread, read, mark seen, compose.").
+		Description("Interactive inbox: list unread/read/all mail, read a message, mark seen, archive, delete, compose.").
 		MimeType("text/html").
 		Handler(func(_ context.Context, uri string, _ map[string]string) (*server.ResourceContent, error) {
 			return &server.ResourceContent{URI: uri, MimeType: "text/html", Text: inboxHTML}, nil

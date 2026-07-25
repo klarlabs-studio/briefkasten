@@ -259,6 +259,8 @@ func (m *Mailbox) MarkSeen(id string) error {
 // fileTo copies a message into the named folder (created when missing)
 // and marks the original seen. Deliberately not MOVE: MOVE expunges the
 // source, and briefkasten never expunges — the original survives, seen.
+// The UID is all that identifies the message, so already-read mail
+// curates exactly like unread mail.
 func (m *Mailbox) fileTo(folder, id string) error {
 	uid, err := parseUID(id)
 	if err != nil {
@@ -269,6 +271,18 @@ func (m *Mailbox) fileTo(folder, id string) error {
 		return err
 	}
 	defer closeClient(c)
+
+	// COPY of a UID that is not in the mailbox is a no-op most servers
+	// answer OK to, which would report a soft move that never happened.
+	// Curation reaches read mail, where an id can come from a listing
+	// taken long before the call, so a stale id must fail loudly.
+	found, err := c.Fetch(imap.UIDSetNum(uid), &imap.FetchOptions{UID: true}).Collect()
+	if err != nil {
+		return fmt.Errorf("imap: locate %s: %w", id, err)
+	}
+	if len(found) == 0 {
+		return fmt.Errorf("%w: %s", domain.ErrBadID, id)
+	}
 
 	if _, err := c.Copy(imap.UIDSetNum(uid), folder).Wait(); err != nil {
 		// Folder may not exist yet: create and retry once.

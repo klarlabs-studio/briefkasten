@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -69,9 +70,14 @@ func TestServeWithBasicAuth(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer func() { _ = resp.Body.Close() }()
-		buf := make([]byte, 4096)
-		n, _ := resp.Body.Read(buf)
-		return resp.StatusCode, string(buf[:n])
+		// Read the whole listing: a fixed-size buffer would make this
+		// assertion depend on where a tool happens to land in the
+		// payload, so an edited description could "fail" the auth gate.
+		payload, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp.StatusCode, string(payload)
 	}
 
 	// Without credentials the request must be rejected: either an HTTP

@@ -1,5 +1,5 @@
 ---
-updated: 2026-07-19
+updated: 2026-07-25
 tags: [architecture]
 ---
 # Briefkasten architecture
@@ -25,10 +25,18 @@ Hexagonal, with the dependency arrow pointing inward at `domain/`.
 ## Load-bearing invariants
 
 - **Nothing is ever destroyed.** Archive and delete are soft moves. IMAP uses
-  COPY + `\Seen`, deliberately not MOVE, because MOVE expunges the source.
+  COPY + `\Seen`, deliberately not MOVE, because MOVE expunges the source. It
+  also verifies the UID is present first: servers answer OK to COPY of a UID
+  they do not hold, which would report a move that never happened.
 - **Reading never mutates.** IMAP fetches `BODY.PEEK[]`; the maildir backend
   reads files in place. This is what makes `scope=read`/`all` safe — looking at
   processed mail cannot disturb the unread backlog.
+- **Read state filters, it does not gate.** `scope` narrows what a listing
+  returns; it never decides what an id may be used for. `Fetch`, `MarkSeen`, and
+  both `Curator` operations resolve an id across the whole mailbox, so an id from
+  a `read` or `all` listing acts exactly like one from the backlog. `MarkSeen` is
+  idempotent in service of this — re-acknowledging read mail is a no-op success,
+  and only an id in no state at all is an `ErrBadID`.
 - **Capabilities degrade loudly, not silently.** A backend that cannot tell read
   from unread errors on a wider scope rather than returning unread ids. See
   `listMailbox` / `searchMailbox` in `application/service.go`.
@@ -64,4 +72,8 @@ reachable from a crafted email.
 Two surfaces, one use-case layer: MCP (`infrastructure/mcpserver`) and CLI
 (`cmd/briefkasten`). Transport is HTTP or stdio. The MCP Apps UI
 (`ui://briefkasten/inbox`) is an embedded self-contained HTML page served as a
-resource — all dynamic values reach the DOM through `textContent`.
+resource — all dynamic values reach the DOM through `textContent`. It carries an
+unread/read/all selector and per-message archive/delete, and deliberately sends
+no `confirm` flag: the host elicits the human, so the UI never answers the gate
+on their behalf. Its bridge allows a longer timeout for those calls, because a
+person has to answer.

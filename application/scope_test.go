@@ -123,6 +123,50 @@ func TestServiceSearchScope(t *testing.T) {
 	}
 }
 
+// The use cases route an id to the backend without consulting its read
+// state — curating processed mail is the point of a wider scope.
+func TestServiceCuratesReadMail(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		op   func(*application.Service, string) error
+		gone func(scopedBox, string) bool
+	}{
+		{
+			"archive",
+			func(s *application.Service, id string) error { return s.Archive("", "", id) },
+			func(b scopedBox, id string) bool { return b.archived[id] },
+		},
+		{
+			"delete",
+			func(s *application.Service, id string) error { return s.Delete("", "", id) },
+			func(b scopedBox, id string) bool { return b.trashed[id] },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			box := scopedBox{newMemBox(map[string]string{"a": "alpha", "b": "beta"})}
+			svc := application.NewService(box, nil)
+			if err := svc.MarkSeen("", "", "a"); err != nil {
+				t.Fatalf("MarkSeen: %v", err)
+			}
+
+			if err := tc.op(svc, "a"); err != nil {
+				t.Fatalf("%s read message: %v", tc.name, err)
+			}
+			if !tc.gone(box, "a") {
+				t.Errorf("%s did not move the read message", tc.name)
+			}
+
+			all, err := svc.List("", "", domain.ScopeAll)
+			if err != nil {
+				t.Fatalf("List(all): %v", err)
+			}
+			if len(all) != 1 || all[0] != "b" {
+				t.Errorf("all after %s = %v, want [b]", tc.name, all)
+			}
+		})
+	}
+}
+
 // Swapping the backend must swap the scoped view with it.
 func TestSwitchableForwardsScope(t *testing.T) {
 	a := scopedBox{newMemBox(map[string]string{"a": "alpha"})}

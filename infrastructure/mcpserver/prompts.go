@@ -73,8 +73,8 @@ func registerPrompts(srv *mcp.Server, svc *application.Service) {
 		})
 
 	srv.Prompt("draft_reply").
-		Description("Draft a reply to an unread message.").
-		Argument("id", "Unread message id (see email://inbox)", true).
+		Description("Draft a reply to a message, read or unread.").
+		Argument("id", "Message id from email.list in any scope (see email://inbox)", true).
 		Handler(func(_ context.Context, args map[string]string) (*server.PromptResult, error) {
 			id := args["id"]
 			if id == "" {
@@ -100,16 +100,6 @@ func registerPrompts(srv *mcp.Server, svc *application.Service) {
 
 	srv.PromptCompletion("draft_reply").
 		Handler(func(_ context.Context, _ server.CompletionRef, arg server.CompletionArgument) (*server.CompletionResult, error) {
-			ids, err := svc.ListUnread("", "")
-			if err != nil {
-				return nil, err
-			}
-			var out []string
-			for _, id := range ids {
-				if strings.HasPrefix(id, arg.Value) {
-					out = append(out, id)
-				}
-			}
-			return &server.CompletionResult{Values: out, Total: len(out)}, nil
+			return completeMessageIDs(svc, arg.Value)
 		})
 }
