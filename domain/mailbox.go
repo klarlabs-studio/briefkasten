@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Mailbox is the core port: anything that can list unread messages,
@@ -106,6 +107,187 @@ type FolderMailbox interface {
 	// bounds only the resolution itself; the returned Mailbox takes a
 	// fresh context per call and does not inherit this one.
 	InFolder(ctx context.Context, name string) (Mailbox, error)
+}
+
+// FolderManager is an optional FolderMailbox capability: making and
+// removing the folders FolderMailbox lists. A backend that can only
+// enumerate what already exists simply does not implement it.
+//
+// The two operations are deliberately asymmetric, because their risks
+// are. Creating a folder cannot lose anything, so it is idempotent and
+// cheap. Deleting one could destroy every message in it — which is the
+// single thing briefkasten never does — so a delete is refused rather
+// than allowed to cascade: see DeleteFolder.
+//
+// Like Mailbox, both methods honour their context.
+type FolderManager interface {
+	// CreateFolder creates a folder, and succeeds if it is already
+	// there.
+	//
+	// Idempotence is the same choice MarkSeen makes, for the same
+	// reason: the caller asked for a state, not for an event. A folder
+	// that already exists is that state, and failing the call would only
+	// teach agents to swallow the error — after which a real failure
+	// would be swallowed with it. It also makes a cancelled call safe to
+	// repeat.
+	//
+	// The name is resolved by the backend, not taken literally: on a
+	// server whose personal namespace is rooted at "INBOX.", asking for
+	// "Work" creates "INBOX.Work", beside the user's other folders
+	// rather than somewhere their mail client never looks. A name the
+	// backend cannot use — one that escapes its root, or one it reserves
+	// for curation — is refused with ErrBadFolder or ErrFolderProtected.
+	CreateFolder(ctx context.Context, name string) error
+
+	// DeleteFolder removes an empty folder.
+	//
+	// Only an empty one. Briefkasten's central invariant is that it
+	// never destroys mail: email.delete is a soft move to trash, and the
+	// IMAP backend copies rather than MOVEs precisely because MOVE
+	// expunges. Deleting a folder full of messages would destroy all of
+	// them in one command, so a folder holding mail is refused with
+	// ErrFolderNotEmpty and the count — the caller moves or deletes the
+	// messages first, each of which is itself a soft move, and then the
+	// empty folder can go. There is deliberately no force flag: a flag
+	// that turns the invariant off is the invariant not holding.
+	//
+	// Two folders are refused outright, with ErrFolderProtected: the
+	// inbox, and whichever folders curation resolves to (see
+	// CurationPlan). Removing the destination archive and delete file
+	// into would break both.
+	//
+	// The emptiness check races, and cannot not race. It asks the
+	// backend what the folder holds and then deletes it, and mail can
+	// arrive in the window between the two — a delivery on IMAP, a file
+	// dropped into a maildir. The window is made as small as the
+	// backends allow (the count is taken immediately before the delete,
+	// never cached from an earlier resolution step) and the maildir
+	// backend closes it entirely, because removing a directory that has
+	// gained a file fails at the kernel rather than deleting it. On IMAP
+	// it stays open: a message that arrives in that window is deleted
+	// with the folder, and no amount of checking first can change that.
+	DeleteFolder(ctx context.Context, name string) error
+}
+
+// ErrBadFolder rejects a folder name the backend cannot use: empty, one
+// that escapes the mailbox root, or one naming a folder that is not
+// there.
+var ErrBadFolder = errors.New("briefkasten: invalid folder")
+
+// ErrFolderNotEmpty refuses to delete a folder that still holds
+// messages or subfolders.
+var ErrFolderNotEmpty = errors.New("briefkasten: folder is not empty")
+
+// ErrFolderProtected refuses to create or delete a folder briefkasten
+// depends on: the inbox itself, or a curation destination.
+var ErrFolderProtected = errors.New("briefkasten: folder is protected")
+
+// CheckFolderName rejects the names no backend can accept.
+//
+// It is the shared floor, not the whole check: what counts as a legal
+// name below this is the backend's own business — a maildir folder is
+// one directory inside the root, an IMAP folder may be a hierarchy path
+// — and each adds its rules on top. Control characters are refused here
+// because a name carrying CR or LF is a name written to be interpreted
+// somewhere it should not be, on the wire or in a path, and no backend
+// has a use for one.
+func CheckFolderName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("%w: a folder name is required", ErrBadFolder)
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("%w: %q contains a control character", ErrBadFolder, name)
+		}
+	}
+	return nil
+}
+
+// CheckFolderEmpty refuses to delete a folder that still holds mail.
+//
+// The refusal states the count and what to do instead, because both are
+// what the caller needs: the count is the size of what would have been
+// destroyed, and the remedy — move or delete the messages first — is
+// itself a soft move, so following it destroys nothing either. A folder
+// emptied that way can then be deleted, which is the whole path from
+// "delete this folder" to the folder being gone without a single message
+// ceasing to exist.
+func CheckFolderEmpty(name string, messages int) error {
+	if messages > 0 {
+		return fmt.Errorf(
+			"%w: %q holds %d %s — archive or delete them first (both are soft moves, so nothing is destroyed), then delete the folder",
+			ErrFolderNotEmpty, name, messages, plural(messages, "message"))
+	}
+	return nil
+}
+
+// CheckFolderChildless refuses to delete a folder that has subfolders.
+//
+// A folder with children is not empty even when it holds no messages of
+// its own: the children do, or may. Deleting a parent takes its subtree
+// with it on backends that recurse, and leaves an unselectable stub on
+// the ones that do not — so the caller deletes the leaves first, each of
+// which is checked the same way.
+func CheckFolderChildless(name string, children []string) error {
+	if len(children) > 0 {
+		return fmt.Errorf("%w: %q holds %d %s (%s) — delete them first, then delete the folder",
+			ErrFolderNotEmpty, name, len(children), plural(len(children), "subfolder"),
+			strings.Join(children, ", "))
+	}
+	return nil
+}
+
+// CheckFolderDeletable refuses the deletions that would break the
+// mailbox rather than merely empty it: the inbox, and either curation
+// destination.
+//
+// resolved is the backend's own name for the folder, name is what the
+// caller asked for and what the error quotes. The two differ where a
+// backend exposes a folder under a different name than it stores it
+// under — the maildir backend answers to "Trash" for a directory it
+// calls ".trash" — and comparing the resolved form is what stops the
+// protection being sidestepped by spelling the folder the other way.
+//
+// The curation check reads the plan rather than a name list because the
+// destinations are discovered, not fixed: on one server trash is
+// "INBOX.Trash", on the next it is "Deleted Items". Whatever archive and
+// delete would file into is what must survive, and asking the same
+// question the curation path asks is the only way to be sure the answer
+// matches.
+func CheckFolderDeletable(name, resolved string, plan CurationPlan) error {
+	if strings.EqualFold(resolved, "INBOX") {
+		return fmt.Errorf("%w: %q is the mailbox itself and cannot be deleted", ErrFolderProtected, name)
+	}
+	for _, dest := range []struct {
+		CurationDestination
+		tool     string
+		override string
+	}{
+		{plan.Archive, "email.archive", "archive_folder"},
+		{plan.Trash, "email.delete", "trash_folder"},
+	} {
+		if dest.Folder == "" || dest.Folder != resolved {
+			continue
+		}
+		remedy := fmt.Sprintf("point %s at another folder in the config first", dest.override)
+		if dest.Route == RouteFixed {
+			remedy = "this backend's curation layout is fixed, so there is nothing to point elsewhere"
+		}
+		return fmt.Errorf(
+			"%w: %q is where %s files mail (route: %s) — deleting it would break email.archive and email.delete; %s",
+			ErrFolderProtected, name, dest.tool, dest.Route, remedy)
+	}
+	return nil
+}
+
+// plural is the one-or-many suffix these refusals need; a count in an
+// error message that reads "1 messages" undermines the number it is
+// there to convey.
+func plural(n int, word string) string {
+	if n == 1 {
+		return word
+	}
+	return word + "s"
 }
 
 // Curator is an optional Mailbox capability: human curation of the

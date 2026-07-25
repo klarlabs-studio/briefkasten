@@ -871,15 +871,40 @@ func (m *Mailbox) planCurationFolder(
 	ctx context.Context, c *imapclient.Client, t curationTarget,
 ) (domain.CurationDestination, error) {
 	if t.override != "" {
-		return domain.CurationDestination{Folder: t.override, Route: domain.RouteOverride}, nil
+		return m.destinationFor(t, nil, ""), nil
 	}
-	boxes, err := awaitValue(ctx, c, "list folders",
-		c.List("", "*", &imap.ListOptions{ReturnSpecialUse: true}).Collect, cmdTimeout)
+	boxes, err := listAll(ctx, c)
 	if err != nil {
 		return domain.CurationDestination{}, fmt.Errorf("imap: cannot resolve the %s folder: %w", t.leaf, err)
 	}
-	folder, route := chooseCurationFolder(t, boxes, m.personalPrefix(ctx, c))
-	return domain.CurationDestination{Folder: folder, Route: route}, nil
+	return m.destinationFor(t, boxes, m.personalPrefix(ctx, c)), nil
+}
+
+// destinationFor decides one destination from a listing already in hand.
+// It exists so folder deletion can settle both destinations from the
+// single LIST it already needs, and settle them by the identical rule
+// curation uses — a protection built on a second opinion about where
+// trash lives would protect the wrong folder the moment the two
+// disagreed.
+func (m *Mailbox) destinationFor(
+	t curationTarget, boxes []*imap.ListData, prefix string,
+) domain.CurationDestination {
+	if t.override != "" {
+		return domain.CurationDestination{Folder: t.override, Route: domain.RouteOverride}
+	}
+	folder, route := chooseCurationFolder(t, boxes, prefix)
+	return domain.CurationDestination{Folder: folder, Route: route}
+}
+
+// listAll runs the LIST both curation resolution and folder management
+// read: every mailbox, with SPECIAL-USE attributes.
+func listAll(ctx context.Context, c *imapclient.Client) ([]*imap.ListData, error) {
+	boxes, err := awaitValue(ctx, c, "list folders",
+		c.List("", "*", &imap.ListOptions{ReturnSpecialUse: true}).Collect, cmdTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("imap: list folders: %w", err)
+	}
+	return boxes, nil
 }
 
 // CurationPlan reports where Archive and Delete would file, and how each
@@ -958,6 +983,197 @@ func (m *Mailbox) personalPrefix(ctx context.Context, c *imapclient.Client) stri
 	}
 	return ns.Personal[0].Prefix
 }
+
+// namespaceFolder places a caller's folder name where the server keeps
+// the user's folders.
+//
+// This is the same lesson the curation path learned: a mailbox rooted at
+// "INBOX." holds "Work" at "INBOX.Work", and a bare "Work" created there
+// is a folder outside the namespace the user's mail client reads —
+// present on the server, invisible to the human. So a name is placed
+// inside the prefix unless it already carries it, which keeps the
+// operation idempotent for callers that pass the full path back (from
+// email://folders, say) rather than creating "INBOX.INBOX.Work".
+//
+// INBOX is the one name left alone in every namespace: RFC 3501 reserves
+// it, case-insensitively, and it is never a child of the prefix.
+//
+// Pure, and tested as such: the layout this exists for — a personal
+// namespace rooted somewhere other than the top — is precisely what an
+// in-memory test server does not reproduce.
+func namespaceFolder(prefix, name string) string {
+	if prefix == "" || strings.EqualFold(name, "INBOX") || strings.HasPrefix(name, prefix) {
+		return name
+	}
+	return prefix + name
+}
+
+// checkFolderName applies the shared floor plus the one rule IMAP adds:
+// no LIST wildcards. "Work*" is a pattern, not a folder — it would match
+// mailboxes the caller never named, and an existence check that can
+// match the wrong mailbox is an existence check that can approve the
+// wrong deletion.
+func checkFolderName(name string) error {
+	if err := domain.CheckFolderName(name); err != nil {
+		return err
+	}
+	if strings.ContainsAny(name, "*%") {
+		return fmt.Errorf("%w: %q contains a LIST wildcard (* or %%), which names a pattern rather than a folder",
+			domain.ErrBadFolder, name)
+	}
+	return nil
+}
+
+// findFolder looks a resolved name up in a listing, returning the
+// server's hierarchy delimiter for it — which is how the caller can tell
+// that folder's children from every other mailbox that merely starts
+// with the same string.
+func findFolder(boxes []*imap.ListData, full string) (rune, bool) {
+	for _, b := range boxes {
+		if b.Mailbox == full {
+			return b.Delim, true
+		}
+	}
+	return 0, false
+}
+
+// childrenOf names the mailboxes nested under full. The delimiter comes
+// from the server rather than from a guess: "." and "/" are both common,
+// and matching on the wrong one would either miss a subtree or mistake
+// "Workshop" for a child of "Work".
+func childrenOf(boxes []*imap.ListData, full string, delim rune) []string {
+	if delim == 0 {
+		return nil
+	}
+	prefix := full + string(delim)
+	var out []string
+	for _, b := range boxes {
+		if strings.HasPrefix(b.Mailbox, prefix) {
+			out = append(out, b.Mailbox)
+		}
+	}
+	return out
+}
+
+// CreateFolder creates a mailbox inside the personal namespace.
+//
+// A folder that is already there is a success, not an error: the caller
+// asked for a folder to exist and it exists — the same idempotence
+// MarkSeen has, and for the same reason. It is answered from the LIST
+// this call makes anyway, with the server's own ALREADYEXISTS as the
+// backstop for a mailbox it holds but did not list.
+func (m *Mailbox) CreateFolder(ctx context.Context, name string) error {
+	if err := checkFolderName(name); err != nil {
+		return err
+	}
+	return m.withConn(ctx, func(c *imapclient.Client) error {
+		boxes, err := listAll(ctx, c)
+		if err != nil {
+			return err
+		}
+		full := namespaceFolder(m.personalPrefix(ctx, c), name)
+		if _, held := findFolder(boxes, full); held {
+			return nil
+		}
+		if err := await(ctx, c, "create "+full, c.Create(full, nil).Wait, cmdTimeout); err != nil {
+			var ierr *imap.Error
+			if errors.As(err, &ierr) && ierr.Code == imap.ResponseCodeAlreadyExists {
+				return nil
+			}
+			return fmt.Errorf("imap: create folder %s: %w", full, err)
+		}
+		return nil
+	})
+}
+
+// DeleteFolder removes an empty mailbox from the personal namespace.
+//
+// Every refusal here exists because IMAP's DELETE does what briefkasten
+// otherwise never does: it destroys mail, all of a folder's messages in
+// one command, with no trash to recover them from. So the folder has to
+// be empty, it has to have no children, and it may be neither the inbox
+// nor a curation destination — deleting the folder archive and delete
+// file into would break both, and it is resolved here exactly as
+// curation resolves it so the two can never disagree.
+//
+// The emptiness check races and cannot not race. STATUS answers for the
+// moment it ran; a message delivered between that reply and the DELETE
+// is destroyed with the folder, and no ordering of two commands can
+// prevent it. What the ordering does buy is the smallest window IMAP
+// allows: the count is taken immediately before the DELETE, after every
+// other check has already passed, so nothing but one round trip sits
+// between "it is empty" and "it is gone". A server with an atomic
+// conditional delete would be better; IMAP has no such command.
+func (m *Mailbox) DeleteFolder(ctx context.Context, name string) error {
+	if err := checkFolderName(name); err != nil {
+		return err
+	}
+	// A refusal is the caller's request being wrong, not the session:
+	// the connection stays healthy and goes back to the cache, so it
+	// travels out rather than through withConn, which closes a connection
+	// whose operation failed.
+	var refused error
+	err := m.withConn(ctx, func(c *imapclient.Client) error {
+		boxes, err := listAll(ctx, c)
+		if err != nil {
+			return err
+		}
+		prefix := m.personalPrefix(ctx, c)
+		full := namespaceFolder(prefix, name)
+		delim, held := findFolder(boxes, full)
+		if !held {
+			refused = fmt.Errorf("%w: no folder named %q", domain.ErrBadFolder, full)
+			return nil
+		}
+		plan := domain.CurationPlan{
+			Archive: m.destinationFor(m.archiveTarget(), boxes, prefix),
+			Trash:   m.destinationFor(m.trashTarget(), boxes, prefix),
+		}
+		if refused = domain.CheckFolderDeletable(full, full, plan); refused != nil {
+			return nil
+		}
+		if refused = domain.CheckFolderChildless(full, childrenOf(boxes, full, delim)); refused != nil {
+			return nil
+		}
+		messages, err := folderMessages(ctx, c, full)
+		if err != nil {
+			return err
+		}
+		if refused = domain.CheckFolderEmpty(full, messages); refused != nil {
+			return nil
+		}
+		if err := await(ctx, c, "delete "+full, c.Delete(full).Wait, cmdTimeout); err != nil {
+			return fmt.Errorf("imap: delete folder %s: %w", full, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	return refused
+}
+
+// folderMessages asks the server how much mail a folder holds, without
+// selecting it.
+//
+// A server that answers the STATUS but omits the count fails the call.
+// Emptiness is the whole basis on which the delete is allowed, and
+// reading a missing count as zero would turn "the server did not say"
+// into "there is nothing to lose".
+func folderMessages(ctx context.Context, c *imapclient.Client, full string) (int, error) {
+	what := "status " + full
+	data, err := awaitValue(ctx, c, what,
+		c.Status(full, &imap.StatusOptions{NumMessages: true}).Wait, cmdTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("imap: %s: %w", what, err)
+	}
+	if data == nil || data.NumMessages == nil {
+		return 0, fmt.Errorf("imap: %s: server did not report a message count, so the folder cannot be shown to be empty", what)
+	}
+	return int(*data.NumMessages), nil
+}
+
+var _ domain.FolderManager = (*Mailbox)(nil)
 
 // fileTo copies a message into the resolved folder and marks the
 // original seen. Deliberately not MOVE: MOVE expunges the source, and

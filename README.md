@@ -19,6 +19,8 @@ contract instead of binding to IMAP libraries:
 | `email.search` | `{"query", "scope?", "folder?", "account?", "limit?"}` → `{"ids": [...], "total": N, "scope": "unread"}` — case-insensitive; IMAP searches server-side |
 | `email.archive` | `{"id" \| "ids", "confirm?"}` → `{"ok": true}` / `{"archived": [...], "failed": [...], "total": N}` — **human-confirmed** (elicitation or confirm flag); soft: filed to Archive, never destroyed; read or unread |
 | `email.delete` | `{"id" \| "ids", "confirm?"}` → `{"ok": true}` / `{"deleted": [...], "failed": [...], "total": N}` — **human-confirmed**; soft delete to Trash, never expunged; read or unread |
+| `email.folder_create` | `{"name", "account?", "confirm?"}` → `{"ok": true, "folder": "Work"}` — **human-confirmed**; idempotent; the name is resolved into the account's folder space (`Work` → `INBOX.Work` on an `INBOX.`-rooted server) |
+| `email.folder_delete` | `{"name", "account?", "confirm?"}` → `{"ok": true, "folder": "Work"}` — **human-confirmed**; **empty folders only**: one holding mail is refused with the count, no force flag; the inbox and the curation destinations are refused outright |
 
 Every mailbox tool — `email.list`, `email.list_unread`, `email.fetch`,
 `email.mark_seen`, `email.search`, `email.archive`, and `email.delete` —
@@ -109,7 +111,7 @@ Beyond tools, the full MCP surface:
 |---|---|
 | Resources | `email://inbox`, `email://inbox/{id}` (raw RFC 5322), `email://inbox/{id}/headers` (parsed from/to/subject/date/message_id — triage without fetching the body), `email://outbox`, `email://outbox/{id}`, `email://folders` (folders plus the curation destinations and how each was decided), `email://accounts` — read state without spending tool calls; `{id}` serves and completes read and unread ids alike |
 | Prompts | `summarize_inbox(count?)` (embeds up to `count` unread messages, default 20, capped at 100 and clamped rather than refused, each truncated at 16 KiB), `draft_reply(id)` (embeds the original — read or unread — truncated at 16 KiB) |
-| Annotations | read tools are `readOnlyHint`, `mark_seen` is `idempotentHint`, `config.set` is `destructiveHint` |
+| Annotations | read tools are `readOnlyHint`, `mark_seen` is `idempotentHint`, `config.set` and the folder tools are `destructiveHint` |
 | Instructions | the consumption contract (mark seen only after successful processing) ships as server instructions |
 | **MCP Apps UI** | `ui://briefkasten/inbox` — an interactive inbox (switch between unread/read/all, read a message, mark seen, archive, delete, compose) rendered by hosts supporting the MCP Apps extension; linked from `email.list_unread` and `email.send_status` |
 
@@ -173,6 +175,8 @@ briefkasten read   <id> [id ...]   # several ids: length-prefixed records
 briefkasten seen   <id> [id ...]
 briefkasten search <query> [--scope unread|read|all]
 briefkasten folders [--curation]   # --curation: where archive/delete would file
+briefkasten folders --create NAME  # idempotent; namespace-aware on IMAP
+briefkasten folders --delete NAME  # empty folders only; prompts y/N, --yes skips
 briefkasten profiles          # names switchable via config.set {"profile": ...}
 briefkasten send   --to a@b.c --subject S --body B [--html '<p>H</p>'] [--attach file.pdf ...]
 briefkasten retry  <id>       # re-queue a failed send and deliver
@@ -231,7 +235,10 @@ Archive and delete are deliberately guarded, everywhere:
 - **MCP**: `email.archive` / `email.delete` ask the human through MCP
   elicitation (the host shows a confirmation; decline aborts). Clients
   without elicitation must pass `confirm: true` — the tool descriptions
-  instruct agents to ask the user first.
+  instruct agents to ask the user first. `email.folder_create` and
+  `email.folder_delete` pass through the identical gate: reshaping the
+  mailbox is as easy to ask for from inside an email body as moving mail
+  is.
 - **CLI**: interactive `[y/N]` prompt; only an explicit yes proceeds. A
   batch is one prompt, and it names the count and the destination.
 - **Semantics**: both are soft moves. Dir backend files into
@@ -290,6 +297,49 @@ delete   INBOX.Trash  (declared)
 the `email://folders` resource under `curation`, and the archive/delete
 confirmation prompt names the destination — so whoever approves a move
 can see where it lands before saying yes.
+
+### Creating and deleting folders
+
+```bash
+briefkasten folders --create Work        # idempotent; no prompt — nothing moves
+briefkasten folders --delete Work        # prompts y/N; empty folders only
+```
+
+Over MCP the same two operations are `email.folder_create` and
+`email.folder_delete`, both behind the human gate.
+
+**Creating** is namespace-aware and idempotent. `--create Work` on a
+server that roots folders under the inbox makes `INBOX.Work` — the same
+resolution curation uses, so the folder lands where the user's mail
+client looks rather than beside it. A folder that already exists is a
+success, not an error: the caller asked for a folder to exist, and it
+does. On the dir backend a folder is a whole maildir (`new/`, `cur/`,
+`tmp/`), and names that would escape the mailbox root — `../escape`,
+`a/b`, a leading dot — are refused, as are the names reserved for
+curation.
+
+**Deleting never destroys mail.** That is the same invariant `email.delete`
+holds, applied one level up:
+
+| Asked to delete | Answer |
+|---|---|
+| an empty folder | deleted |
+| a folder holding messages | **refused**, with the count: *`"Work"` holds 3 messages — archive or delete them first (both are soft moves, so nothing is destroyed), then delete the folder* |
+| a folder with subfolders | **refused**, naming them — delete the leaves first |
+| `INBOX` | **refused** — it is the mailbox itself |
+| the archive or trash folder | **refused** — removing where curation files would break `email.archive` and `email.delete`; the destination is resolved by the same path curation resolves it, so an override moves the protection with it |
+
+There is deliberately **no force flag**. A flag that turns the invariant
+off is the invariant not holding; the way to delete a folder full of mail
+is to move the mail out first, and every step of that is itself a soft
+move.
+
+The emptiness check races, and the docs say so rather than pretending
+otherwise: the count is taken immediately before the delete, but on IMAP
+a message delivered in that window is deleted with the folder, and no
+ordering of two IMAP commands can prevent it. On the dir backend the race
+loses safely — removing a directory that has just gained a file fails at
+the kernel, so the folder and the message both survive.
 
 ## Configure
 
@@ -646,11 +696,12 @@ Hexagonal, dependencies point inward only:
 
 ```
 domain/          ports + invariants: Mailbox (+ Searcher, FolderMailbox,
-                 Curator capabilities), Sender, OutboundMessage, the
-                 outbox statechart, OutboxStore
+                 FolderManager, Curator capabilities), Sender,
+                 OutboundMessage, the outbox statechart, OutboxStore
 application/     the use cases — Service (routing, list/read/seen/search/
-                 folders/archive/delete) and the Outbox engine. The MCP
-                 tools and the CLI call the SAME methods.
+                 folders/archive/delete/folder create+delete) and the
+                 Outbox engine. The MCP tools and the CLI call the SAME
+                 methods.
 infrastructure/  maildir, imap, smtp, auth (OAuth2/XOAUTH2), resilience,
                  and mcpserver (the MCP presentation adapter)
 briefkasten      root: compatibility facade + Config (composition)

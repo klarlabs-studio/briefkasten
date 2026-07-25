@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -363,6 +364,192 @@ func (d *Mailbox) InFolder(ctx context.Context, name string) (domain.Mailbox, er
 }
 
 var _ domain.FolderMailbox = (*Mailbox)(nil)
+
+// maildirSubs are the three directories a maildir is made of. new/ is
+// the unread backlog, cur/ holds read mail, and tmp/ is where a delivery
+// is assembled before it is renamed into new/ — briefkasten's own writer
+// does not use it, but a foreign delivery agent writing into this folder
+// will, so a folder created here is a whole maildir rather than the two
+// thirds of one this backend happens to read.
+var maildirSubs = []string{"new", "cur", "tmp"}
+
+// folderPath validates a folder name and resolves it to its directory,
+// applying exactly the confinement InFolder applies: one path component,
+// inside the root, no dot-prefix. The rules are shared with safePath's
+// treatment of message ids because the risk is the same one — a name is
+// the only part of these calls the caller controls, and a name that can
+// contain a separator or "…/.." is a mailbox that can be written outside
+// its root.
+//
+// The curated names are refused rather than resolved. Unlike InFolder,
+// which resolves them so archived and trashed mail stays readable, a
+// folder briefkasten files into is not the caller's to make or unmake:
+// creating "Archive" would collide with the maildir curation already
+// uses, and deleting it would take the archive with it.
+func (d *Mailbox) folderPath(name string) (string, error) {
+	if err := domain.CheckFolderName(name); err != nil {
+		return "", err
+	}
+	if _, curated := curatedDir(name); curated {
+		return "", fmt.Errorf(
+			"%w: %q is where briefkasten curates on this backend — creating or deleting it would break email.archive and email.delete",
+			domain.ErrFolderProtected, name)
+	}
+	if name != filepath.Base(name) || strings.HasPrefix(name, ".") {
+		return "", fmt.Errorf(
+			"%w: %q must be a single name inside the mailbox — no path separators, no leading dot",
+			domain.ErrBadFolder, name)
+	}
+	return filepath.Join(d.root, name), nil
+}
+
+// CreateFolder makes a sub-maildir under the root: new/, cur/ and tmp/,
+// ready to receive mail from briefkasten or from any other maildir
+// writer.
+//
+// Creating a folder that is already there succeeds and changes nothing,
+// exactly as MarkSeen does for a message that is already read: the
+// caller asked for a folder to exist, and it exists. MkdirAll gives that
+// for free, which is why it is used rather than Mkdir.
+func (d *Mailbox) CreateFolder(ctx context.Context, name string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("briefkasten: create folder %q: %w", name, err)
+	}
+	// The root maildir is always there, so asking for it is already
+	// satisfied — the same idempotence, one level up.
+	if name == "INBOX" {
+		return nil
+	}
+	dir, err := d.folderPath(name)
+	if err != nil {
+		return err
+	}
+	for _, sub := range maildirSubs {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0o700); err != nil {
+			return fmt.Errorf("briefkasten: create folder %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// DeleteFolder removes an empty sub-maildir.
+//
+// "Empty" here means the whole maildir: new/, cur/ and tmp/ together,
+// plus the absence of subfolders. A message that was marked seen sits in
+// cur/ and is exactly as much mail as one still in new/, and a folder
+// whose only content is a child folder full of mail is not empty in any
+// sense the caller cares about.
+//
+// The check races with delivery, and this backend makes the race lose
+// safely rather than pretending it is not there. The count is taken
+// immediately before the removal, so the window is a few microseconds of
+// local file I/O — but a mail delivered into new/ inside it would still
+// be counted as zero. What closes the window is the removal itself:
+// os.Remove of a directory that has gained a file fails at the kernel
+// instead of deleting the file, so the worst outcome is a refusal with
+// the folder still standing and the message still in it. Nothing is
+// destroyed by losing this race, which is the property that matters.
+func (d *Mailbox) DeleteFolder(ctx context.Context, name string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("briefkasten: delete folder %q: %w", name, err)
+	}
+	// The plan is asked first, and asked the same way the IMAP backend
+	// asks it, so the inbox and the curation destinations are protected
+	// by one rule rather than by a per-backend list that could drift from
+	// where mail actually goes. Resolving the exposed name to its on-disk
+	// maildir is what makes deleting "Archive" and deleting ".archive"
+	// the same refusal.
+	plan, err := d.CurationPlan(ctx)
+	if err != nil {
+		return err
+	}
+	resolved := name
+	if curated, ok := curatedDir(name); ok {
+		resolved = curated
+	}
+	if err := domain.CheckFolderDeletable(name, resolved, plan); err != nil {
+		return err
+	}
+	dir, err := d.folderPath(name)
+	if err != nil {
+		return err
+	}
+	if err := d.checkFolderEmpty(name, dir); err != nil {
+		return err
+	}
+	return d.removeFolder(name, dir)
+}
+
+// checkFolderEmpty counts what the folder holds — messages across the
+// maildir subdirectories, and any subfolder — and refuses a delete that
+// would take mail with it.
+func (d *Mailbox) checkFolderEmpty(name, dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%w: no folder named %q", domain.ErrBadFolder, name)
+		}
+		return fmt.Errorf("briefkasten: delete folder %q: %w", name, err)
+	}
+	var (
+		messages int
+		children []string
+	)
+	for _, e := range entries {
+		if !e.IsDir() {
+			// A stray file directly under the folder is not mail this
+			// backend put there, but it is content, and removing the
+			// directory would remove it. Counting it as content is the
+			// conservative reading.
+			messages++
+			continue
+		}
+		if !slices.Contains(maildirSubs, e.Name()) {
+			children = append(children, e.Name())
+			continue
+		}
+		held, err := os.ReadDir(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return fmt.Errorf("briefkasten: delete folder %q: %w", name, err)
+		}
+		messages += len(held)
+	}
+	if err := domain.CheckFolderChildless(name, children); err != nil {
+		return err
+	}
+	return domain.CheckFolderEmpty(name, messages)
+}
+
+// removeFolder takes the maildir apart in the order that fails safely:
+// new/ first, because that is where a concurrent delivery lands, so a
+// folder that gained a message in the last microsecond is refused before
+// anything else has been touched.
+//
+// A failed removal is re-counted rather than guessed at. os.Remove
+// reports a non-empty directory differently on every platform, and the
+// honest way to tell "mail arrived" from "the disk is unwritable" is to
+// look at what is in there now.
+func (d *Mailbox) removeFolder(name, dir string) error {
+	// The folder itself goes last, so the maildir is dismantled from the
+	// inside out and the directory only disappears once everything under
+	// it already has.
+	for _, sub := range append(append([]string{}, maildirSubs...), ".") {
+		path := filepath.Join(dir, sub)
+		err := os.Remove(path)
+		if err == nil || errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if held, readErr := os.ReadDir(path); readErr == nil && len(held) > 0 {
+			return fmt.Errorf(
+				"%w: %q gained content while it was being deleted (%s now holds %d) — the folder was left in place",
+				domain.ErrFolderNotEmpty, name, filepath.Base(path), len(held))
+		}
+		return fmt.Errorf("briefkasten: delete folder %q: %w", name, err)
+	}
+	return nil
+}
+
+var _ domain.FolderManager = (*Mailbox)(nil)
 
 // moveTo relocates a message into a hidden sub-maildir. Read messages
 // (cur/) curate just like unread ones (new/).
