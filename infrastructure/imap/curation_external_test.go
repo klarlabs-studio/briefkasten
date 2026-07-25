@@ -17,7 +17,7 @@ func filedIn(t *testing.T, addr, folder string) int {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ids, err := mb.List(domain.ScopeAll)
+	ids, err := mb.List(t.Context(), domain.ScopeAll)
 	if err != nil {
 		t.Fatalf("list %s: %v", folder, err)
 	}
@@ -27,7 +27,7 @@ func filedIn(t *testing.T, addr, folder string) int {
 // firstUID returns the one seeded message's id.
 func firstUID(t *testing.T, mb *bimap.Mailbox) string {
 	t.Helper()
-	ids, err := mb.ListUnread()
+	ids, err := mb.ListUnread(t.Context())
 	if err != nil || len(ids) == 0 {
 		t.Fatalf("ListUnread = %v, err %v", ids, err)
 	}
@@ -41,7 +41,7 @@ func TestIMAPCurationReusesExistingFolder(t *testing.T) {
 	addr := startIMAPServer(t, "Archive")
 	mb := newTestIMAPMailbox(t, addr)
 
-	if err := mb.Archive(firstUID(t, mb)); err != nil {
+	if err := mb.Archive(t.Context(), firstUID(t, mb)); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 	if n := filedIn(t, addr, "Archive"); n != 1 {
@@ -54,7 +54,7 @@ func TestIMAPCurationCreatesMissingFolder(t *testing.T) {
 	addr := startIMAPServer(t)
 	mb := newTestIMAPMailbox(t, addr)
 
-	if err := mb.Delete(firstUID(t, mb)); err != nil {
+	if err := mb.Delete(t.Context(), firstUID(t, mb)); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if n := filedIn(t, addr, "Trash"); n != 1 {
@@ -74,7 +74,7 @@ func TestIMAPCurationHonoursConfiguredFolders(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := mb.Delete(firstUID(t, mb)); err != nil {
+	if err := mb.Delete(t.Context(), firstUID(t, mb)); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if n := filedIn(t, addr, "Papierkorb"); n != 1 {

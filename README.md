@@ -530,13 +530,20 @@ Implement the `Mailbox` port and serve it:
 
 ```go
 type Mailbox interface {
-    ListUnread() ([]string, error)
-    Fetch(id string) ([]byte, error)
-    MarkSeen(id string) error
+    ListUnread(ctx context.Context) ([]string, error)
+    Fetch(ctx context.Context, id string) ([]byte, error)
+    MarkSeen(ctx context.Context, id string) error
 }
 
 mcp.ServeHTTP(ctx, briefkasten.NewServer(myIMAPBox), ":8090")
 ```
+
+Every method must honour its context: when it is cancelled or its
+deadline passes, return promptly with an error that wraps
+`context.Canceled` or `context.DeadlineExceeded`. That is what lets the
+per-call timeout be a real bound rather than a documented one, and how
+the retry and circuit-breaker layers tell "we stopped waiting" from "the
+backend is broken".
 
 Gmail, Exchange, a database queue — anything that can list, fetch, and
 acknowledge. The tool contract stays identical for every consumer.

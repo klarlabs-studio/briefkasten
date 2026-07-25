@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -27,6 +28,20 @@ func NewConfigServer(cfg *Config) (*mcp.Server, *Outbox, error) {
 	accounts, err := cfg.BuildAccounts()
 	if err != nil {
 		return nil, nil, err
+	}
+	// Named accounts go behind their own Switchables for the same reason
+	// the default mailbox does: config.set commits a whole configuration,
+	// and an account pinned to its startup connection would keep talking
+	// to the endpoint — with the credentials — the operator just replaced.
+	// Only the values of the map are ever swapped; the map itself is handed
+	// to the service once and read from there without a lock.
+	accountSw := map[string]*Switchable{}
+	if cfg.RuntimeConfig {
+		for name := range accounts {
+			s := NewSwitchable(accounts[name])
+			accountSw[name] = s
+			accounts[name] = s
+		}
 	}
 
 	// The outbound sender is held behind a SwitchableSender so config.set can
@@ -55,7 +70,7 @@ func NewConfigServer(cfg *Config) (*mcp.Server, *Outbox, error) {
 	}
 	srv := NewServer(sw, opts...)
 	if cfg.RuntimeConfig {
-		registerConfigTools(srv, cfg, sw, swSender)
+		registerConfigTools(srv, cfg, sw, swSender, accountSw)
 	}
 	return srv, ob, nil
 }
@@ -208,7 +223,10 @@ func applyOAuth2Patch(cur *OAuth2Settings, p *oauth2Patch) *OAuth2Settings {
 	return n
 }
 
-func registerConfigTools(srv *mcp.Server, cfg *Config, sw *Switchable, swSender *SwitchableSender) {
+func registerConfigTools(
+	srv *mcp.Server, cfg *Config, sw *Switchable,
+	swSender *SwitchableSender, accountSw map[string]*Switchable,
+) {
 	var mu sync.Mutex // serializes config mutations
 
 	// The maildir the operator chose at startup bounds every later
@@ -216,7 +234,7 @@ func registerConfigTools(srv *mcp.Server, cfg *Config, sw *Switchable, swSender 
 	startupMaildir := cfg.Maildir
 
 	srv.Tool("config.get").
-		Description("Inspect the active mailbox configuration, including the profiles available to config.set. Credentials are redacted.").
+		Description("Inspect the active mailbox configuration, including the named accounts and the profiles available to config.set. Credentials are redacted.").
 		ReadOnly().
 		Handler(func(_ context.Context, _ struct{}) (map[string]any, error) {
 			mu.Lock()
@@ -235,6 +253,12 @@ func registerConfigTools(srv *mcp.Server, cfg *Config, sw *Switchable, swSender 
 				// The switchable destinations, so a caller can pick one
 				// instead of inventing an endpoint.
 				"profiles": cfg.ProfileNames(),
+				// Every mailbox the server serves, not just the default one —
+				// an account is where a config change used to go unnoticed.
+				"accounts": accountsInfo(cfg, accountSw),
+			}
+			if d := divergedAccounts(cfg, accountSw); len(d) > 0 {
+				out["accounts_diverged"] = d
 			}
 			if cfg.Path() != "" {
 				out["config_file"] = cfg.Path()
@@ -258,7 +282,7 @@ func registerConfigTools(srv *mcp.Server, cfg *Config, sw *Switchable, swSender 
 				if in.Backend != "" || in.Maildir != "" || in.IMAP != nil || in.Outbox != nil {
 					return nil, errors.New("briefkasten: profile cannot be combined with field-level settings — a profile is applied whole, so mixing the two would silently drop one of them")
 				}
-				return applyProfile(ctx, in.Profile, in.Confirm, &mu, cfg, sw, swSender)
+				return applyProfile(ctx, in.Profile, in.Confirm, &mu, cfg, sw, swSender, accountSw)
 			}
 			if err := confirmReconfigure(ctx, in.Confirm, in.Backend, in.Maildir, in.IMAP); err != nil {
 				return nil, err
@@ -344,14 +368,28 @@ func registerConfigTools(srv *mcp.Server, cfg *Config, sw *Switchable, swSender 
 				}
 			}
 
-			return commitConfig(&next, cfg, sw, swSender)
+			return commitConfig(&next, cfg, sw, swSender, accountSw)
 		})
 }
 
-// commitConfig validates the candidate configuration, and only once both
-// the mailbox and (when sending) the sender build does it swap them in.
-// A configuration that cannot be built leaves the running one untouched.
-func commitConfig(next, cfg *Config, sw *Switchable, swSender *SwitchableSender) (map[string]any, error) {
+// commitConfig validates the whole candidate configuration — the default
+// mailbox, the outbound sender, and every named account — and only once
+// all of them build does it swap any of them in. A configuration that
+// cannot be built leaves the running one untouched.
+//
+// Rebuilding is I/O: credentials files are re-read, addresses re-resolved,
+// backends re-validated, and any of that can fail. The commit is therefore
+// all-or-nothing. Applying whichever parts happened to build would leave
+// the server serving a mixture of two configurations that nobody wrote —
+// harder to reason about, and harder to recover from, than either of them
+// alone. The price is that one unbuildable account blocks an unrelated
+// change to the default mailbox; that is the intended trade, because the
+// refusal is loud and names the account while a half-applied swap is
+// silent.
+func commitConfig(
+	next, cfg *Config, sw *Switchable,
+	swSender *SwitchableSender, accountSw map[string]*Switchable,
+) (map[string]any, error) {
 	mb, mdesc, err := next.BuildMailbox()
 	if err != nil {
 		return nil, err
@@ -364,16 +402,31 @@ func commitConfig(next, cfg *Config, sw *Switchable, swSender *SwitchableSender)
 			return nil, err
 		}
 	}
+	accountSwaps, err := buildAccountSwaps(next, accountSw)
+	if err != nil {
+		return nil, err
+	}
 
+	// Everything built. From here on nothing can fail, so the swaps land
+	// together and no request can observe a partly-applied configuration.
 	*cfg = *next
 	sw.Swap(mb)
 	if newSender != nil {
 		swSender.Swap(newSender)
 	}
+	for name, box := range accountSwaps {
+		accountSw[name].Swap(box)
+	}
 
 	result := map[string]any{"ok": true, "backend": mdesc}
 	if sdesc != "" {
 		result["sender"] = sdesc
+	}
+	if len(accountSwaps) > 0 {
+		result["accounts_rebuilt"] = liveAccountNames(accountSw)
+	}
+	if d := divergedAccounts(cfg, accountSw); len(d) > 0 {
+		result["accounts_diverged"] = d
 	}
 	if cfg.Path() != "" {
 		if err := cfg.Save(); err != nil {
@@ -396,6 +449,7 @@ func commitConfig(next, cfg *Config, sw *Switchable, swSender *SwitchableSender)
 func applyProfile(
 	ctx context.Context, name string, confirmed bool, mu *sync.Mutex,
 	cfg *Config, sw *Switchable, swSender *SwitchableSender,
+	accountSw map[string]*Switchable,
 ) (map[string]any, error) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -417,10 +471,148 @@ func applyProfile(
 	}
 
 	candidate := cfg.applyProfile(profile)
-	result, err := commitConfig(&candidate, cfg, sw, swSender)
+	result, err := commitConfig(&candidate, cfg, sw, swSender, accountSw)
 	if err != nil {
 		return nil, err
 	}
 	result["profile"] = name
 	return result, nil
+}
+
+// buildAccountSwaps materialises every named account of the candidate
+// configuration and pairs each with the live slot that will serve it.
+// Nothing is swapped here — a caller that gets an error can abandon the
+// whole commit with the running configuration untouched.
+//
+// Accounts are built through Config.BuildAccounts, which constructs each
+// one from its own configuration block alone. That is what keeps the
+// credential binding intact across a rebuild: an account block declaring
+// an endpoint but no credentials connects without them, exactly as it did
+// at startup, instead of inheriting the password config.set just supplied
+// for a different server. The same isolation covers the TLS direction —
+// insecure lives in the account block, which no runtime patch can reach,
+// so a rebuild cannot turn an account's TLS off any more than config.set
+// can turn the default's off.
+func buildAccountSwaps(next *Config, live map[string]*Switchable) (map[string]Mailbox, error) {
+	if len(live) == 0 && len(next.Accounts) == 0 {
+		return nil, nil
+	}
+	built, err := next.BuildAccounts()
+	if err != nil {
+		return nil, err
+	}
+	swaps := make(map[string]Mailbox, len(live))
+	for name := range live {
+		if mb, ok := built[name]; ok {
+			swaps[name] = mb
+			continue
+		}
+		swaps[name] = revokedAccount{name: name}
+	}
+	return swaps, nil
+}
+
+// revokedAccount stands in for a named account the committed
+// configuration no longer declares. The service's account map is fixed
+// when the server is built and read without a lock, so a name cannot be
+// withdrawn from it at runtime — but leaving the startup mailbox in the
+// slot would go on serving a connection the operator just removed. Every
+// call failing is the honest alternative: the name stays routable only to
+// say that it is gone.
+type revokedAccount struct{ name string }
+
+func (r revokedAccount) err() error {
+	return fmt.Errorf(
+		"briefkasten: account %q is no longer configured — it was removed by a runtime "+
+			"reconfiguration and the server must restart to release the name", r.name)
+}
+
+// The refusal does not depend on the context: the name is gone whether
+// or not the caller is still waiting, and reporting that costs nothing.
+
+// ListUnread refuses: the account this name pointed at is gone.
+func (r revokedAccount) ListUnread(context.Context) ([]string, error) { return nil, r.err() }
+
+// List refuses for every scope, so a wider listing reports the revocation
+// rather than the generic "backend lists unread mail only".
+func (r revokedAccount) List(context.Context, Scope) ([]string, error) { return nil, r.err() }
+
+// Fetch refuses: the account this name pointed at is gone.
+func (r revokedAccount) Fetch(context.Context, string) ([]byte, error) { return nil, r.err() }
+
+// MarkSeen refuses: the account this name pointed at is gone.
+func (r revokedAccount) MarkSeen(context.Context, string) error { return r.err() }
+
+var _ Mailbox = revokedAccount{}
+
+// liveAccountNames lists the named mailboxes the server routes to, in
+// stable order.
+func liveAccountNames(live map[string]*Switchable) []string {
+	names := make([]string, 0, len(live))
+	for name := range live {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// divergedAccounts names the accounts where the live routing table and
+// the configuration disagree, so the gap is reported rather than left for
+// an operator to infer from odd results.
+//
+// Rebuilding keeps the two in step for every name that exists in both,
+// which is every name config.set can produce today. What it cannot do is
+// change the SET of names: the service's account map is fixed when the
+// server is built. A name only the configuration knows cannot be served
+// at all; a name only the routing table knows has been revoked. Either
+// way the answer is a restart, and this is where that shows.
+func divergedAccounts(cfg *Config, live map[string]*Switchable) []string {
+	var out []string
+	for name := range cfg.Accounts {
+		if _, ok := live[name]; !ok {
+			out = append(out, name)
+		}
+	}
+	for name := range live {
+		if _, ok := cfg.Accounts[name]; !ok {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// accountsInfo describes each configured account for config.get: enough
+// to see which endpoint it talks to, redacted exactly as the top-level
+// block is — passwords and OAuth2 secrets never leave the process.
+func accountsInfo(cfg *Config, live map[string]*Switchable) []map[string]any {
+	names := make([]string, 0, len(cfg.Accounts))
+	for name := range cfg.Accounts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	out := make([]map[string]any, 0, len(names))
+	for _, name := range names {
+		a := cfg.Accounts[name]
+		// The same shape BuildAccounts constructs, so the reported backend
+		// is the one that would actually be built.
+		sub := Config{Backend: a.Backend, Maildir: a.Maildir, IMAP: a.IMAP}
+		backend := sub.ResolvedBackend()
+		info := map[string]any{"name": name, "backend": backend}
+		if backend == "imap" {
+			info["addr"] = a.IMAP.Addr
+			info["username"] = a.IMAP.Username
+			info["insecure"] = a.IMAP.Insecure
+		} else {
+			info["maildir"] = a.Maildir
+		}
+		if _, ok := live[name]; !ok {
+			// Configuration the server cannot route to; do not let it read
+			// as if it were live.
+			info["served"] = false
+		}
+		out = append(out, info)
+	}
+	return out
 }

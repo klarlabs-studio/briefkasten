@@ -1,6 +1,7 @@
 package application_test
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -12,7 +13,7 @@ import (
 // scopedBox is a memBox that also knows read from unread mail.
 type scopedBox struct{ *memBox }
 
-func (s scopedBox) List(scope domain.Scope) ([]string, error) {
+func (s scopedBox) List(_ context.Context, scope domain.Scope) ([]string, error) {
 	var ids []string
 	for id := range s.msgs {
 		if s.archived[id] || s.trashed[id] {
@@ -38,12 +39,12 @@ func (s scopedBox) List(scope domain.Scope) ([]string, error) {
 
 func TestServiceListScopedBackend(t *testing.T) {
 	box := scopedBox{newMemBox(map[string]string{"a": "alpha", "b": "beta"})}
-	if err := box.MarkSeen("a"); err != nil {
+	if err := box.MarkSeen(t.Context(), "a"); err != nil {
 		t.Fatalf("MarkSeen: %v", err)
 	}
 	svc := application.NewService(box, nil)
 
-	read, err := svc.List("", "", domain.ScopeRead)
+	read, err := svc.List(t.Context(), "", "", domain.ScopeRead)
 	if err != nil {
 		t.Fatalf("List(read): %v", err)
 	}
@@ -51,7 +52,7 @@ func TestServiceListScopedBackend(t *testing.T) {
 		t.Fatalf("List(read) = %v, want [a]", read)
 	}
 
-	all, err := svc.List("", "", domain.ScopeAll)
+	all, err := svc.List(t.Context(), "", "", domain.ScopeAll)
 	if err != nil {
 		t.Fatalf("List(all): %v", err)
 	}
@@ -63,12 +64,12 @@ func TestServiceListScopedBackend(t *testing.T) {
 // An empty scope is the unread default, so pre-scope callers are safe.
 func TestServiceListDefaultsToUnread(t *testing.T) {
 	box := scopedBox{newMemBox(map[string]string{"a": "alpha", "b": "beta"})}
-	if err := box.MarkSeen("a"); err != nil {
+	if err := box.MarkSeen(t.Context(), "a"); err != nil {
 		t.Fatalf("MarkSeen: %v", err)
 	}
 	svc := application.NewService(box, nil)
 
-	ids, err := svc.List("", "", "")
+	ids, err := svc.List(t.Context(), "", "", "")
 	if err != nil {
 		t.Fatalf("List(\"\"): %v", err)
 	}
@@ -79,7 +80,7 @@ func TestServiceListDefaultsToUnread(t *testing.T) {
 
 func TestServiceListRejectsUnknownScope(t *testing.T) {
 	svc := application.NewService(newMemBox(map[string]string{"a": "alpha"}), nil)
-	if _, err := svc.List("", "", domain.Scope("everything")); !errors.Is(err, domain.ErrBadScope) {
+	if _, err := svc.List(t.Context(), "", "", domain.Scope("everything")); !errors.Is(err, domain.ErrBadScope) {
 		t.Fatalf("List(everything) error = %v, want ErrBadScope", err)
 	}
 }
@@ -89,10 +90,10 @@ func TestServiceListRejectsUnknownScope(t *testing.T) {
 func TestServiceListUnscopedBackendRejectsWiderScope(t *testing.T) {
 	svc := application.NewService(newMemBox(map[string]string{"a": "alpha"}), nil)
 
-	if _, err := svc.List("", "", domain.ScopeUnread); err != nil {
+	if _, err := svc.List(t.Context(), "", "", domain.ScopeUnread); err != nil {
 		t.Fatalf("List(unread) on plain backend: %v", err)
 	}
-	_, err := svc.List("", "", domain.ScopeRead)
+	_, err := svc.List(t.Context(), "", "", domain.ScopeRead)
 	if err == nil || !strings.Contains(err.Error(), "unread mail only") {
 		t.Fatalf("List(read) on plain backend error = %v, want an unsupported-scope error", err)
 	}
@@ -100,12 +101,12 @@ func TestServiceListUnscopedBackendRejectsWiderScope(t *testing.T) {
 
 func TestServiceSearchScope(t *testing.T) {
 	box := scopedBox{newMemBox(map[string]string{"a": "alpha", "b": "beta"})}
-	if err := box.MarkSeen("a"); err != nil {
+	if err := box.MarkSeen(t.Context(), "a"); err != nil {
 		t.Fatalf("MarkSeen: %v", err)
 	}
 	svc := application.NewService(box, nil)
 
-	ids, err := svc.SearchScope("", "", "alpha", domain.ScopeRead)
+	ids, err := svc.SearchScope(t.Context(), "", "", "alpha", domain.ScopeRead)
 	if err != nil {
 		t.Fatalf("SearchScope: %v", err)
 	}
@@ -114,7 +115,7 @@ func TestServiceSearchScope(t *testing.T) {
 	}
 
 	// The unread default must not reach it.
-	ids, err = svc.Search("", "", "alpha")
+	ids, err = svc.Search(t.Context(), "", "", "alpha")
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -128,35 +129,35 @@ func TestServiceSearchScope(t *testing.T) {
 func TestServiceCuratesReadMail(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		op   func(*application.Service, string) error
+		op   func(*application.Service, context.Context, string) error
 		gone func(scopedBox, string) bool
 	}{
 		{
 			"archive",
-			func(s *application.Service, id string) error { return s.Archive("", "", id) },
+			func(s *application.Service, ctx context.Context, id string) error { return s.Archive(ctx, "", "", id) },
 			func(b scopedBox, id string) bool { return b.archived[id] },
 		},
 		{
 			"delete",
-			func(s *application.Service, id string) error { return s.Delete("", "", id) },
+			func(s *application.Service, ctx context.Context, id string) error { return s.Delete(ctx, "", "", id) },
 			func(b scopedBox, id string) bool { return b.trashed[id] },
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			box := scopedBox{newMemBox(map[string]string{"a": "alpha", "b": "beta"})}
 			svc := application.NewService(box, nil)
-			if err := svc.MarkSeen("", "", "a"); err != nil {
+			if err := svc.MarkSeen(t.Context(), "", "", "a"); err != nil {
 				t.Fatalf("MarkSeen: %v", err)
 			}
 
-			if err := tc.op(svc, "a"); err != nil {
+			if err := tc.op(svc, t.Context(), "a"); err != nil {
 				t.Fatalf("%s read message: %v", tc.name, err)
 			}
 			if !tc.gone(box, "a") {
 				t.Errorf("%s did not move the read message", tc.name)
 			}
 
-			all, err := svc.List("", "", domain.ScopeAll)
+			all, err := svc.List(t.Context(), "", "", domain.ScopeAll)
 			if err != nil {
 				t.Fatalf("List(all): %v", err)
 			}
@@ -170,12 +171,12 @@ func TestServiceCuratesReadMail(t *testing.T) {
 // Swapping the backend must swap the scoped view with it.
 func TestSwitchableForwardsScope(t *testing.T) {
 	a := scopedBox{newMemBox(map[string]string{"a": "alpha"})}
-	if err := a.MarkSeen("a"); err != nil {
+	if err := a.MarkSeen(t.Context(), "a"); err != nil {
 		t.Fatalf("MarkSeen: %v", err)
 	}
 	sw := application.NewSwitchable(a)
 
-	read, err := sw.List(domain.ScopeRead)
+	read, err := sw.List(t.Context(), domain.ScopeRead)
 	if err != nil {
 		t.Fatalf("List(read): %v", err)
 	}
@@ -183,7 +184,7 @@ func TestSwitchableForwardsScope(t *testing.T) {
 		t.Fatalf("List(read) = %v, want [a]", read)
 	}
 
-	hits, err := sw.SearchScope(domain.ScopeRead, "alpha")
+	hits, err := sw.SearchScope(t.Context(), domain.ScopeRead, "alpha")
 	if err != nil {
 		t.Fatalf("SearchScope: %v", err)
 	}
@@ -193,7 +194,7 @@ func TestSwitchableForwardsScope(t *testing.T) {
 
 	// After the swap the new backend answers, unread this time.
 	sw.Swap(scopedBox{newMemBox(map[string]string{"b": "beta"})})
-	unread, err := sw.List(domain.ScopeUnread)
+	unread, err := sw.List(t.Context(), domain.ScopeUnread)
 	if err != nil {
 		t.Fatalf("List(unread) after swap: %v", err)
 	}

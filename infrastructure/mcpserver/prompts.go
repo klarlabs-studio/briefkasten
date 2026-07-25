@@ -30,7 +30,7 @@ func registerPrompts(srv *mcp.Server, svc *application.Service) {
 	srv.Prompt("summarize_inbox").
 		Description("Summarize unread messages: senders, subjects, what needs action. Embeds up to 'count' messages (default 20), each truncated to keep the prompt bounded.").
 		Argument("count", "Max messages to embed (default 20)", false).
-		Handler(func(_ context.Context, args map[string]string) (*server.PromptResult, error) {
+		Handler(func(ctx context.Context, args map[string]string) (*server.PromptResult, error) {
 			count := defaultSummarizeCount
 			if v := args["count"]; v != "" {
 				n, err := strconv.Atoi(v)
@@ -39,7 +39,7 @@ func registerPrompts(srv *mcp.Server, svc *application.Service) {
 				}
 				count = n
 			}
-			ids, err := svc.ListUnread("", "")
+			ids, err := svc.ListUnread(ctx, "", "")
 			if err != nil {
 				return nil, err
 			}
@@ -50,8 +50,13 @@ func registerPrompts(srv *mcp.Server, svc *application.Service) {
 			var b strings.Builder
 			b.WriteString("Summarize the following unread messages. For each: sender, subject, one-line gist, and whether it needs action.\n")
 			for _, id := range ids {
-				raw, err := svc.Read("", "", id)
+				raw, err := svc.Read(ctx, "", "", id)
 				if err != nil {
+					// One unreadable message is skipped; a request nobody is
+					// waiting for stops embedding the rest.
+					if ctx.Err() != nil {
+						return nil, err
+					}
 					continue
 				}
 				if len(raw) > maxEmbeddedMessageBytes {
@@ -75,12 +80,12 @@ func registerPrompts(srv *mcp.Server, svc *application.Service) {
 	srv.Prompt("draft_reply").
 		Description("Draft a reply to a message, read or unread.").
 		Argument("id", "Message id from email.list in any scope (see email://inbox)", true).
-		Handler(func(_ context.Context, args map[string]string) (*server.PromptResult, error) {
+		Handler(func(ctx context.Context, args map[string]string) (*server.PromptResult, error) {
 			id := args["id"]
 			if id == "" {
 				return nil, errors.New("draft_reply: 'id' argument required")
 			}
-			raw, err := svc.Read("", "", id)
+			raw, err := svc.Read(ctx, "", "", id)
 			if err != nil {
 				return nil, err
 			}
@@ -99,7 +104,7 @@ func registerPrompts(srv *mcp.Server, svc *application.Service) {
 		})
 
 	srv.PromptCompletion("draft_reply").
-		Handler(func(_ context.Context, _ server.CompletionRef, arg server.CompletionArgument) (*server.CompletionResult, error) {
-			return completeMessageIDs(svc, arg.Value)
+		Handler(func(ctx context.Context, _ server.CompletionRef, arg server.CompletionArgument) (*server.CompletionResult, error) {
+			return completeMessageIDs(ctx, svc, arg.Value)
 		})
 }

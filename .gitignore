@@ -3,3 +3,5 @@
 .coverctl-history.json
 /dist/
 /findings.json
+# nox scan artifact: the AI-component inventory is regenerated per scan.
+/ai.inventory.json

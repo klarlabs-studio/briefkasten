@@ -4,7 +4,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"go.klarlabs.de/briefkasten/domain"
 )
@@ -130,5 +132,153 @@ func TestOutboxStoreRemoveMissing(t *testing.T) {
 	st, _ := newOutbox(t)
 	if err := st.Remove("queued", "nope"); err == nil {
 		t.Error("Remove of missing record accepted")
+	}
+}
+
+func TestOutboxStoreInterruptedWriteLeavesRecordIntact(t *testing.T) {
+	st, root := newOutbox(t)
+	msg := domain.OutboundMessage{ID: "m1", To: []string{"you@example.com"}, Subject: "keep me", State: "queued"}
+	if err := st.Write(msg); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	// A crash mid-write: the record made it into the staging area and was
+	// never renamed. The staged bytes must be invisible to everything.
+	staged := filepath.Join(root, "tmp", "queued.m1.json")
+	if err := os.WriteFile(staged, []byte(`{"id":"m1","subj`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.Find("m1")
+	if err != nil {
+		t.Fatalf("Find after interrupted write: %v", err)
+	}
+	if got.Subject != "keep me" {
+		t.Errorf("subject = %q, want the previous record intact", got.Subject)
+	}
+	ids, err := st.List("queued")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != "m1" {
+		t.Errorf("List = %v, want only the completed record", ids)
+	}
+
+	// The next write reuses the staging name, so the debris does not
+	// accumulate and cannot poison a later record.
+	msg.Subject = "second"
+	if err := st.Write(msg); err != nil {
+		t.Fatalf("Write over stale staging: %v", err)
+	}
+	got, _ = st.Find("m1")
+	if got.Subject != "second" {
+		t.Errorf("subject = %q, want second", got.Subject)
+	}
+}
+
+func TestOutboxStoreFindSurfacesUndecodableRecord(t *testing.T) {
+	st, root := newOutbox(t)
+	// A record truncated by a crash under the old non-atomic write. It must
+	// read as damage, never as "no such message" — an id that silently
+	// vanishes is a lost message.
+	if err := os.WriteFile(filepath.Join(root, "queued", "torn.json"), []byte(`{"id":"torn"`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := st.Find("torn")
+	if err == nil {
+		t.Fatal("undecodable record read as valid")
+	}
+	if errors.Is(err, domain.ErrBadID) {
+		t.Errorf("err = %v, want a decode error rather than an unknown-id error", err)
+	}
+	if !strings.Contains(err.Error(), "torn") {
+		t.Errorf("err = %v, want the damaged record named", err)
+	}
+}
+
+func TestOutboxStoreFindInAddressesOneState(t *testing.T) {
+	st, _ := newOutbox(t)
+	// A half-done move: the same id under two states at once.
+	if err := st.Write(domain.OutboundMessage{ID: "m1", To: []string{"a@b.c"}, State: "queued"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Write(domain.OutboundMessage{ID: "m1", To: []string{"a@b.c"}, State: "sending", Attempts: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	queued, err := st.FindIn("queued", "m1")
+	if err != nil {
+		t.Fatalf("FindIn queued: %v", err)
+	}
+	sending, err := st.FindIn("sending", "m1")
+	if err != nil {
+		t.Fatalf("FindIn sending: %v", err)
+	}
+	if queued.Attempts != 0 || sending.Attempts != 1 {
+		t.Errorf("attempts = %d/%d, want the two copies told apart", queued.Attempts, sending.Attempts)
+	}
+	if _, err := st.FindIn("sent", "m1"); !errors.Is(err, domain.ErrBadID) {
+		t.Errorf("FindIn of a state without the record = %v, want ErrBadID", err)
+	}
+}
+
+func TestOutboxStoreLockKeepsASecondHolderOut(t *testing.T) {
+	st, root := newOutbox(t)
+	// flock is bound to the open file description, so a second store handle
+	// over the same directory contends exactly as a second process does.
+	other, err := NewOutboxStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	release, err := st.Lock()
+	if err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+	if _, ok, err := other.TryLock(); err != nil || ok {
+		t.Errorf("TryLock on a held outbox = %v, %v; want refused", ok, err)
+	}
+
+	release()
+	release() // releasing twice is harmless
+
+	stolen, ok, err := other.TryLock()
+	if err != nil || !ok {
+		t.Fatalf("TryLock after release = %v, %v; want granted", ok, err)
+	}
+	stolen()
+}
+
+func TestOutboxStoreLockWaitsForTheHolder(t *testing.T) {
+	st, root := newOutbox(t)
+	other, err := NewOutboxStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := st.Lock()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	granted := make(chan struct{})
+	go func() {
+		secondRelease, err := other.Lock()
+		if err == nil {
+			secondRelease()
+		}
+		close(granted)
+	}()
+
+	select {
+	case <-granted:
+		t.Fatal("Lock granted while another holder had the outbox")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	release()
+	select {
+	case <-granted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Lock never granted after the holder released")
 	}
 }

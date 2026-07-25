@@ -1,6 +1,7 @@
 package imap_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -12,7 +13,7 @@ import (
 func TestIMAPListByScope(t *testing.T) {
 	mb := newTestIMAPMailbox(t, startIMAPServer(t))
 
-	unread, err := mb.List(domain.ScopeUnread)
+	unread, err := mb.List(t.Context(), domain.ScopeUnread)
 	if err != nil {
 		t.Fatalf("List(unread): %v", err)
 	}
@@ -21,7 +22,7 @@ func TestIMAPListByScope(t *testing.T) {
 	}
 	id := unread[0]
 
-	read, err := mb.List(domain.ScopeRead)
+	read, err := mb.List(t.Context(), domain.ScopeRead)
 	if err != nil {
 		t.Fatalf("List(read): %v", err)
 	}
@@ -29,11 +30,11 @@ func TestIMAPListByScope(t *testing.T) {
 		t.Fatalf("read = %v, want none before MarkSeen", read)
 	}
 
-	if err := mb.MarkSeen(id); err != nil {
+	if err := mb.MarkSeen(t.Context(), id); err != nil {
 		t.Fatalf("MarkSeen: %v", err)
 	}
 
-	read, err = mb.List(domain.ScopeRead)
+	read, err = mb.List(t.Context(), domain.ScopeRead)
 	if err != nil {
 		t.Fatalf("List(read) after seen: %v", err)
 	}
@@ -41,7 +42,7 @@ func TestIMAPListByScope(t *testing.T) {
 		t.Fatalf("read after seen = %v, want [%s]", read, id)
 	}
 
-	all, err := mb.List(domain.ScopeAll)
+	all, err := mb.List(t.Context(), domain.ScopeAll)
 	if err != nil {
 		t.Fatalf("List(all): %v", err)
 	}
@@ -50,10 +51,10 @@ func TestIMAPListByScope(t *testing.T) {
 	}
 
 	// Fetching read mail still peeks: it must not disturb the flag.
-	if _, err := mb.Fetch(id); err != nil {
+	if _, err := mb.Fetch(t.Context(), id); err != nil {
 		t.Fatalf("Fetch read message: %v", err)
 	}
-	unread, err = mb.List(domain.ScopeUnread)
+	unread, err = mb.List(t.Context(), domain.ScopeUnread)
 	if err != nil {
 		t.Fatalf("List(unread) after fetch: %v", err)
 	}
@@ -64,7 +65,7 @@ func TestIMAPListByScope(t *testing.T) {
 
 func TestIMAPListRejectsUnknownScope(t *testing.T) {
 	mb := newTestIMAPMailbox(t, startIMAPServer(t))
-	if _, err := mb.List(domain.Scope("spam")); !errors.Is(err, domain.ErrBadScope) {
+	if _, err := mb.List(t.Context(), domain.Scope("spam")); !errors.Is(err, domain.ErrBadScope) {
 		t.Fatalf("List(spam) error = %v, want ErrBadScope", err)
 	}
 }
@@ -72,15 +73,15 @@ func TestIMAPListRejectsUnknownScope(t *testing.T) {
 func TestIMAPSearchScope(t *testing.T) {
 	mb := newTestIMAPMailbox(t, startIMAPServer(t))
 
-	ids, err := mb.List(domain.ScopeUnread)
+	ids, err := mb.List(t.Context(), domain.ScopeUnread)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if err := mb.MarkSeen(ids[0]); err != nil {
+	if err := mb.MarkSeen(t.Context(), ids[0]); err != nil {
 		t.Fatalf("MarkSeen: %v", err)
 	}
 
-	hits, err := mb.SearchScope(domain.ScopeRead, "Bescheid")
+	hits, err := mb.SearchScope(t.Context(), domain.ScopeRead, "Bescheid")
 	if err != nil {
 		t.Fatalf("SearchScope(read): %v", err)
 	}
@@ -88,7 +89,7 @@ func TestIMAPSearchScope(t *testing.T) {
 		t.Fatalf("SearchScope(read, Bescheid) = %v, want one hit", hits)
 	}
 
-	hits, err = mb.Search("Bescheid")
+	hits, err = mb.Search(t.Context(), "Bescheid")
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -102,20 +103,20 @@ func TestIMAPSearchScope(t *testing.T) {
 func TestIMAPArchiveReadMessage(t *testing.T) {
 	mb := newTestIMAPMailbox(t, startIMAPServer(t))
 
-	unread, err := mb.List(domain.ScopeUnread)
+	unread, err := mb.List(t.Context(), domain.ScopeUnread)
 	if err != nil || len(unread) != 1 {
 		t.Fatalf("List(unread) = %v, err %v", unread, err)
 	}
 	id := unread[0]
-	if err := mb.MarkSeen(id); err != nil {
+	if err := mb.MarkSeen(t.Context(), id); err != nil {
 		t.Fatalf("MarkSeen: %v", err)
 	}
 
-	if err := mb.Archive(id); err != nil {
+	if err := mb.Archive(t.Context(), id); err != nil {
 		t.Fatalf("Archive read message: %v", err)
 	}
 
-	archive, err := mb.InFolder("Archive")
+	archive, err := mb.InFolder(t.Context(), "Archive")
 	if err != nil {
 		t.Fatalf("InFolder(Archive): %v", err)
 	}
@@ -125,7 +126,7 @@ func TestIMAPArchiveReadMessage(t *testing.T) {
 	}
 	// COPY carries the flags across, so the filed message is read —
 	// scope=all is the only listing that sees the whole folder.
-	filed, err := scoped.List(domain.ScopeAll)
+	filed, err := scoped.List(t.Context(), domain.ScopeAll)
 	if err != nil {
 		t.Fatalf("list Archive: %v", err)
 	}
@@ -140,8 +141,8 @@ func TestIMAPArchiveReadMessage(t *testing.T) {
 func TestIMAPCurateUnknownUIDIsBadID(t *testing.T) {
 	mb := newTestIMAPMailbox(t, startIMAPServer(t))
 
-	for name, op := range map[string]func(string) error{"Archive": mb.Archive, "Delete": mb.Delete} {
-		err := op("99999")
+	for name, op := range map[string]func(context.Context, string) error{"Archive": mb.Archive, "Delete": mb.Delete} {
+		err := op(t.Context(), "99999")
 		if err == nil {
 			t.Errorf("%s of an unknown uid succeeded, want an error", name)
 			continue

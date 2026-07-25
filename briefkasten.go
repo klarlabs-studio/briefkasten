@@ -12,6 +12,8 @@
 package briefkasten
 
 import (
+	"errors"
+
 	mcp "go.klarlabs.de/mcp"
 
 	"go.klarlabs.de/briefkasten/application"
@@ -136,20 +138,59 @@ func Resilient(mb Mailbox, cfg ResilienceConfig) *ResilientMailbox {
 	return resilience.Wrap(mb, cfg)
 }
 
+// ErrOutboxBusy reports that another process owns the outbox directory.
+var ErrOutboxBusy = application.ErrOutboxBusy
+
 // NewOutbox binds a maildir-backed outbox store to the sender — the
-// pre-restructure convenience constructor. The store is recovered from
-// any unclean shutdown before use: duplicate state files are repaired and
-// messages stranded mid-send are moved to failed for explicit retry.
+// pre-restructure convenience constructor, and the one the server uses.
+// The store is recovered from any unclean shutdown before use: duplicate
+// state files are repaired and messages stranded mid-send are moved to
+// failed for explicit retry.
+//
+// Recovery is skipped when another process already holds the outbox: what
+// looks stranded from outside is that process's in-flight delivery, and
+// the owner repairs its own directory when it starts. An unreadable record
+// does fail construction — the alternative is starting up beside somebody's
+// half-written mail and never mentioning it.
 func NewOutbox(root string, sender Sender) (*Outbox, error) {
+	ob, err := NewClientOutbox(root, sender)
+	if err != nil {
+		return nil, err
+	}
+	if err := ob.Recover(); err != nil && !errors.Is(err, ErrOutboxBusy) {
+		return nil, err
+	}
+	return ob, nil
+}
+
+// NewClientOutbox binds the same store and sender without recovering.
+// A one-shot command is a client of the outbox, not its owner: repair is
+// the owner's startup job, and a client that needs it (see the CLI's
+// retry) asks for it explicitly rather than as a side effect of connecting.
+// Its own writes stay serialised against the owner by the outbox lock.
+func NewClientOutbox(root string, sender Sender) (*Outbox, error) {
 	store, err := maildir.NewOutboxStore(root)
 	if err != nil {
 		return nil, err
 	}
-	ob := application.NewOutbox(store, sender)
-	if err := ob.Recover(); err != nil {
-		return nil, err
+	return application.NewOutbox(store, sender), nil
+}
+
+// BuildClientOutbox is BuildOutbox for a one-shot command: identical
+// wiring, no recovery. See NewClientOutbox.
+func (c *Config) BuildClientOutbox() (*Outbox, string, error) {
+	if c.Outbox.Dir == "" {
+		return nil, "", nil
 	}
-	return ob, nil
+	sender, desc, err := c.buildSender()
+	if err != nil {
+		return nil, "", err
+	}
+	ob, err := NewClientOutbox(c.Outbox.Dir, sender)
+	if err != nil {
+		return nil, "", err
+	}
+	return ob, desc, nil
 }
 
 // MCP presentation.

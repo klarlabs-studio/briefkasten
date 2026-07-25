@@ -1,6 +1,7 @@
 package resilience
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -10,7 +11,7 @@ import (
 // scopedStub is a Mailbox that knows read from unread mail.
 type scopedStub struct{ *flakyMailbox }
 
-func (s scopedStub) List(scope domain.Scope) ([]string, error) {
+func (s scopedStub) List(_ context.Context, scope domain.Scope) ([]string, error) {
 	switch scope {
 	case domain.ScopeUnread:
 		return []string{"1"}, nil
@@ -23,8 +24,8 @@ func (s scopedStub) List(scope domain.Scope) ([]string, error) {
 	}
 }
 
-func (s scopedStub) SearchScope(scope domain.Scope, _ string) ([]string, error) {
-	return s.List(scope)
+func (s scopedStub) SearchScope(ctx context.Context, scope domain.Scope, _ string) ([]string, error) {
+	return s.List(ctx, scope)
 }
 
 // A scoped backend's List must survive the retry that the first call
@@ -33,7 +34,7 @@ func TestResilientListForwardsScope(t *testing.T) {
 	inner := scopedStub{&flakyMailbox{failures: 1}}
 	mb := Wrap(inner, Config{MaxAttempts: 3})
 
-	ids, err := mb.List(domain.ScopeRead)
+	ids, err := mb.List(t.Context(), domain.ScopeRead)
 	if err != nil {
 		t.Fatalf("List(read): %v", err)
 	}
@@ -41,7 +42,7 @@ func TestResilientListForwardsScope(t *testing.T) {
 		t.Fatalf("List(read) = %v, want [2]", ids)
 	}
 
-	hits, err := mb.SearchScope(domain.ScopeAll, "anything")
+	hits, err := mb.SearchScope(t.Context(), domain.ScopeAll, "anything")
 	if err != nil {
 		t.Fatalf("SearchScope(all): %v", err)
 	}
@@ -55,10 +56,10 @@ func TestResilientListForwardsScope(t *testing.T) {
 func TestResilientListUnscopedBackend(t *testing.T) {
 	mb := Wrap(&flakyMailbox{}, Config{MaxAttempts: 1})
 
-	if _, err := mb.List(domain.ScopeUnread); err != nil {
+	if _, err := mb.List(t.Context(), domain.ScopeUnread); err != nil {
 		t.Fatalf("List(unread): %v", err)
 	}
-	_, err := mb.List(domain.ScopeAll)
+	_, err := mb.List(t.Context(), domain.ScopeAll)
 	if err == nil || !strings.Contains(err.Error(), "unread mail only") {
 		t.Fatalf("List(all) error = %v, want an unsupported-scope error", err)
 	}

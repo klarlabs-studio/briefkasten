@@ -34,6 +34,22 @@ type Config struct {
 // failures, and a circuit breaker that fast-fails while the backend is
 // down. domain.ErrBadID is never retried and never trips the breaker — a bad id
 // is the caller's mistake, not a backend fault.
+//
+// Errors come out in three kinds, and callers can tell them apart:
+//
+//   - errors.Is(err, context.Canceled) — the caller walked away. The
+//     backend was never judged: nothing is retried, and the breaker is
+//     not moved.
+//   - errors.Is(err, context.DeadlineExceeded) — the call ran out of
+//     time, either the caller's deadline or OpTimeout. A per-attempt
+//     overrun additionally matches ferrors.ErrTimeout. This does count
+//     against the backend: a server that will not answer inside its
+//     budget is unhealthy by definition.
+//   - anything else — a backend fault, retried and counted.
+//
+// The timeout is only real because domain.Mailbox takes a context and
+// its implementations honour it; a backend that ignored the context
+// would be timed out on paper and still hold the caller.
 type Mailbox struct {
 	mb domain.Mailbox
 	cb circuitbreaker.CircuitBreaker[any]
@@ -51,14 +67,30 @@ func Wrap(mb domain.Mailbox, cfg Config) *Mailbox {
 		mb: mb,
 		cb: circuitbreaker.New[any](circuitbreaker.Config{
 			IsSuccessful: func(err error) bool {
-				// Caller errors are not backend health signals.
-				return err == nil || errors.Is(err, domain.ErrBadID)
+				// Caller errors are not backend health signals — neither a
+				// bad id nor a caller that hung up. Without the second
+				// clause a client that closes its connection five times
+				// would open the breaker on every other client's behalf,
+				// having learnt nothing about the server at all.
+				return err == nil ||
+					errors.Is(err, domain.ErrBadID) ||
+					errors.Is(err, context.Canceled)
 			},
 		}),
 		rt: retry.New[any](retry.Config{
-			MaxAttempts:        cfg.MaxAttempts,
-			InitialDelay:       cfg.InitialDelay,
-			NonRetryableErrors: []error{domain.ErrBadID},
+			MaxAttempts:  cfg.MaxAttempts,
+			InitialDelay: cfg.InitialDelay,
+			// A call that ran out of time is not a transient failure to
+			// paper over: the backend was handed its full budget and did
+			// not answer, so a retry buys the caller a second identical
+			// hang — three attempts turning one stalled IMAP session into
+			// three, with the MCP request (and the human behind it) held
+			// for the whole of it. Failures that come back fast — a reset
+			// connection, a refused dial — never reach this clause and are
+			// still retried. context.Canceled is listed for the same
+			// reason from the other direction: nobody is waiting for the
+			// answer any more.
+			NonRetryableErrors: []error{domain.ErrBadID, context.DeadlineExceeded, context.Canceled},
 			Jitter:             true,
 		}),
 		to: timeout.New[any](timeout.Config{}),
@@ -68,20 +100,24 @@ func Wrap(mb domain.Mailbox, cfg Config) *Mailbox {
 
 // execute runs fn as breaker(retry(timeout(fn))): the breaker sees the
 // final outcome after retries, each attempt individually bounded.
-func (r *Mailbox) execute(fn func() (any, error)) (any, error) {
-	ctx := context.Background()
+//
+// The context is the caller's, not a fresh Background one: a deadline
+// the caller set, or a cancellation when it gives up, has to reach the
+// backend for either to mean anything. fortify's timeout derives the
+// per-attempt deadline from it and returns once fn does, so the bound is
+// only as real as the backend's own respect for the context — which is
+// why domain.Mailbox demands it.
+func (r *Mailbox) execute(ctx context.Context, fn func(context.Context) (any, error)) (any, error) {
 	return r.cb.Execute(ctx, func(ctx context.Context) (any, error) {
 		return r.rt.Execute(ctx, func(ctx context.Context) (any, error) {
-			return r.to.Execute(ctx, r.op, func(context.Context) (any, error) {
-				return fn()
-			})
+			return r.to.Execute(ctx, r.op, fn)
 		})
 	})
 }
 
 // ListUnread lists unread ids through the resilience pipeline.
-func (r *Mailbox) ListUnread() ([]string, error) {
-	v, err := r.execute(func() (any, error) { return r.mb.ListUnread() })
+func (r *Mailbox) ListUnread(ctx context.Context) ([]string, error) {
+	v, err := r.execute(ctx, func(ctx context.Context) (any, error) { return r.mb.ListUnread(ctx) })
 	if err != nil {
 		return nil, err
 	}
@@ -89,8 +125,8 @@ func (r *Mailbox) ListUnread() ([]string, error) {
 }
 
 // Fetch returns raw message bytes through the resilience pipeline.
-func (r *Mailbox) Fetch(id string) ([]byte, error) {
-	v, err := r.execute(func() (any, error) { return r.mb.Fetch(id) })
+func (r *Mailbox) Fetch(ctx context.Context, id string) ([]byte, error) {
+	v, err := r.execute(ctx, func(ctx context.Context) (any, error) { return r.mb.Fetch(ctx, id) })
 	if err != nil {
 		return nil, err
 	}
@@ -98,14 +134,14 @@ func (r *Mailbox) Fetch(id string) ([]byte, error) {
 }
 
 // MarkSeen acknowledges a message through the resilience pipeline.
-func (r *Mailbox) MarkSeen(id string) error {
-	_, err := r.execute(func() (any, error) { return nil, r.mb.MarkSeen(id) })
+func (r *Mailbox) MarkSeen(ctx context.Context, id string) error {
+	_, err := r.execute(ctx, func(ctx context.Context) (any, error) { return nil, r.mb.MarkSeen(ctx, id) })
 	return err
 }
 
 // List lists a scope through the resilience pipeline.
-func (r *Mailbox) List(scope domain.Scope) ([]string, error) {
-	v, err := r.execute(func() (any, error) { return listFallback(r.mb, scope) })
+func (r *Mailbox) List(ctx context.Context, scope domain.Scope) ([]string, error) {
+	v, err := r.execute(ctx, func(ctx context.Context) (any, error) { return listFallback(ctx, r.mb, scope) })
 	if err != nil {
 		return nil, err
 	}
@@ -114,13 +150,15 @@ func (r *Mailbox) List(scope domain.Scope) ([]string, error) {
 
 // Search forwards to the wrapped backend's domain.Searcher (or the generic
 // fallback), guarded by the same resilience pipeline.
-func (r *Mailbox) Search(query string) ([]string, error) {
-	return r.SearchScope(domain.ScopeUnread, query)
+func (r *Mailbox) Search(ctx context.Context, query string) ([]string, error) {
+	return r.SearchScope(ctx, domain.ScopeUnread, query)
 }
 
 // SearchScope searches within a scope through the resilience pipeline.
-func (r *Mailbox) SearchScope(scope domain.Scope, query string) ([]string, error) {
-	v, err := r.execute(func() (any, error) { return searchFallback(r.mb, scope, query) })
+func (r *Mailbox) SearchScope(ctx context.Context, scope domain.Scope, query string) ([]string, error) {
+	v, err := r.execute(ctx, func(ctx context.Context) (any, error) {
+		return searchFallback(ctx, r.mb, scope, query)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -128,12 +166,12 @@ func (r *Mailbox) SearchScope(scope domain.Scope, query string) ([]string, error
 }
 
 // Folders forwards to the wrapped backend when it supports folders.
-func (r *Mailbox) Folders() ([]string, error) {
+func (r *Mailbox) Folders(ctx context.Context) ([]string, error) {
 	fm, ok := r.mb.(domain.FolderMailbox)
 	if !ok {
 		return []string{"INBOX"}, nil
 	}
-	v, err := r.execute(func() (any, error) { return fm.Folders() })
+	v, err := r.execute(ctx, func(ctx context.Context) (any, error) { return fm.Folders(ctx) })
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +179,7 @@ func (r *Mailbox) Folders() ([]string, error) {
 }
 
 // InFolder returns a resilience-wrapped folder-scoped instance.
-func (r *Mailbox) InFolder(name string) (domain.Mailbox, error) {
+func (r *Mailbox) InFolder(ctx context.Context, name string) (domain.Mailbox, error) {
 	fm, ok := r.mb.(domain.FolderMailbox)
 	if !ok {
 		if name == "INBOX" {
@@ -149,7 +187,7 @@ func (r *Mailbox) InFolder(name string) (domain.Mailbox, error) {
 		}
 		return nil, errors.New("briefkasten: backend has no folder support")
 	}
-	inner, err := fm.InFolder(name)
+	inner, err := fm.InFolder(ctx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -157,34 +195,34 @@ func (r *Mailbox) InFolder(name string) (domain.Mailbox, error) {
 }
 
 // Archive forwards to the wrapped backend's domain.Curator through the pipeline.
-func (r *Mailbox) Archive(id string) error {
+func (r *Mailbox) Archive(ctx context.Context, id string) error {
 	cu, ok := r.mb.(domain.Curator)
 	if !ok {
 		return errors.New("briefkasten: backend has no curation support")
 	}
-	_, err := r.execute(func() (any, error) { return nil, cu.Archive(id) })
+	_, err := r.execute(ctx, func(ctx context.Context) (any, error) { return nil, cu.Archive(ctx, id) })
 	return err
 }
 
 // Delete forwards to the wrapped backend's domain.Curator through the pipeline.
-func (r *Mailbox) Delete(id string) error {
+func (r *Mailbox) Delete(ctx context.Context, id string) error {
 	cu, ok := r.mb.(domain.Curator)
 	if !ok {
 		return errors.New("briefkasten: backend has no curation support")
 	}
-	_, err := r.execute(func() (any, error) { return nil, cu.Delete(id) })
+	_, err := r.execute(ctx, func(ctx context.Context) (any, error) { return nil, cu.Delete(ctx, id) })
 	return err
 }
 
 // CurationPlan forwards to the wrapped backend's inspector through the
 // pipeline. Resolution talks to the server, so it deserves the same
 // timeout and breaker as any other call.
-func (r *Mailbox) CurationPlan() (domain.CurationPlan, error) {
+func (r *Mailbox) CurationPlan(ctx context.Context) (domain.CurationPlan, error) {
 	ci, ok := r.mb.(domain.CurationInspector)
 	if !ok {
 		return domain.CurationPlan{}, errors.New("briefkasten: backend cannot report curation destinations")
 	}
-	v, err := r.execute(func() (any, error) { return ci.CurationPlan() })
+	v, err := r.execute(ctx, func(ctx context.Context) (any, error) { return ci.CurationPlan(ctx) })
 	if err != nil {
 		return domain.CurationPlan{}, err
 	}
@@ -203,34 +241,40 @@ var (
 
 // listFallback mirrors the application-layer scoped-list fallback for
 // the resilience pipeline.
-func listFallback(mb domain.Mailbox, scope domain.Scope) ([]string, error) {
+func listFallback(ctx context.Context, mb domain.Mailbox, scope domain.Scope) ([]string, error) {
 	if sm, ok := mb.(domain.ScopedMailbox); ok {
-		return sm.List(scope)
+		return sm.List(ctx, scope)
 	}
 	if scope != domain.ScopeUnread {
 		return nil, fmt.Errorf("briefkasten: backend lists unread mail only, scope %q unsupported", string(scope))
 	}
-	return mb.ListUnread()
+	return mb.ListUnread(ctx)
 }
 
 // searchFallback mirrors the application-layer search fallback for the
 // resilience pipeline.
-func searchFallback(mb domain.Mailbox, scope domain.Scope, query string) ([]string, error) {
+func searchFallback(ctx context.Context, mb domain.Mailbox, scope domain.Scope, query string) ([]string, error) {
 	if s, ok := mb.(domain.ScopedSearcher); ok {
-		return s.SearchScope(scope, query)
+		return s.SearchScope(ctx, scope, query)
 	}
 	if s, ok := mb.(domain.Searcher); ok && scope == domain.ScopeUnread {
-		return s.Search(query)
+		return s.Search(ctx, query)
 	}
-	ids, err := listFallback(mb, scope)
+	ids, err := listFallback(ctx, mb, scope)
 	if err != nil {
 		return nil, err
 	}
 	needle := []byte(strings.ToLower(query))
 	var out []string
 	for _, id := range ids {
-		raw, err := mb.Fetch(id)
+		raw, err := mb.Fetch(ctx, id)
 		if err != nil {
+			// A message that cannot be read is skipped, but a scan whose
+			// time has run out must stop rather than march through the
+			// remaining ids collecting the same error.
+			if ctx.Err() != nil {
+				return nil, err
+			}
 			continue
 		}
 		if bytes.Contains(bytes.ToLower(raw), needle) {

@@ -1,6 +1,7 @@
 package resilience
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -21,16 +22,16 @@ type stubMailbox struct {
 	seenCalls int
 }
 
-func (s *stubMailbox) ListUnread() ([]string, error) { return s.ids, nil }
+func (s *stubMailbox) ListUnread(context.Context) ([]string, error) { return s.ids, nil }
 
-func (s *stubMailbox) Fetch(id string) ([]byte, error) {
+func (s *stubMailbox) Fetch(_ context.Context, id string) ([]byte, error) {
 	if err := s.fetchErrs[id]; err != nil {
 		return nil, err
 	}
 	return s.raws[id], nil
 }
 
-func (s *stubMailbox) MarkSeen(id string) error {
+func (s *stubMailbox) MarkSeen(context.Context, string) error {
 	s.seenCalls++
 	return s.seenErr
 }
@@ -42,7 +43,7 @@ type searchingMailbox struct {
 	hits  []string
 }
 
-func (s *searchingMailbox) Search(query string) ([]string, error) {
+func (s *searchingMailbox) Search(_ context.Context, query string) ([]string, error) {
 	s.query = query
 	return s.hits, nil
 }
@@ -53,9 +54,9 @@ type folderedMailbox struct {
 	folders []string
 }
 
-func (f *folderedMailbox) Folders() ([]string, error) { return f.folders, nil }
+func (f *folderedMailbox) Folders(context.Context) ([]string, error) { return f.folders, nil }
 
-func (f *folderedMailbox) InFolder(name string) (domain.Mailbox, error) {
+func (f *folderedMailbox) InFolder(_ context.Context, name string) (domain.Mailbox, error) {
 	if slices.Contains(f.folders, name) {
 		return &stubMailbox{ids: []string{name + "-1"}}, nil
 	}
@@ -69,12 +70,12 @@ type curatedMailbox struct {
 	deleted  []string
 }
 
-func (c *curatedMailbox) Archive(id string) error {
+func (c *curatedMailbox) Archive(_ context.Context, id string) error {
 	c.archived = append(c.archived, id)
 	return nil
 }
 
-func (c *curatedMailbox) Delete(id string) error {
+func (c *curatedMailbox) Delete(_ context.Context, id string) error {
 	c.deleted = append(c.deleted, id)
 	return nil
 }
@@ -83,7 +84,7 @@ func TestResilientMarkSeen(t *testing.T) {
 	mb := &stubMailbox{}
 	r := Wrap(mb, Config{InitialDelay: time.Millisecond})
 
-	if err := r.MarkSeen("m1.eml"); err != nil {
+	if err := r.MarkSeen(t.Context(), "m1.eml"); err != nil {
 		t.Fatalf("MarkSeen: %v", err)
 	}
 	if mb.seenCalls != 1 {
@@ -95,7 +96,7 @@ func TestResilientMarkSeenBadIDNotRetried(t *testing.T) {
 	mb := &stubMailbox{seenErr: fmt.Errorf("%w: escape", domain.ErrBadID)}
 	r := Wrap(mb, Config{InitialDelay: time.Millisecond})
 
-	err := r.MarkSeen("../../etc/passwd")
+	err := r.MarkSeen(t.Context(), "../../etc/passwd")
 	if !errors.Is(err, domain.ErrBadID) {
 		t.Fatalf("err = %v, want domain.ErrBadID", err)
 	}
@@ -109,7 +110,7 @@ func TestResilientSearchDelegatesToSearcher(t *testing.T) {
 	mb := &searchingMailbox{hits: []string{"hit.eml"}}
 	r := Wrap(mb, Config{InitialDelay: time.Millisecond})
 
-	ids, err := r.Search("Rechnung")
+	ids, err := r.Search(t.Context(), "Rechnung")
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestResilientSearchFallbackScans(t *testing.T) {
 	}
 	r := Wrap(mb, Config{InitialDelay: time.Millisecond})
 
-	ids, err := r.Search("rechnung")
+	ids, err := r.Search(t.Context(), "rechnung")
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -147,7 +148,7 @@ func TestResilientFoldersDelegates(t *testing.T) {
 	mb := &folderedMailbox{folders: []string{"INBOX", "steuern"}}
 	r := Wrap(mb, Config{InitialDelay: time.Millisecond})
 
-	folders, err := r.Folders()
+	folders, err := r.Folders(t.Context())
 	if err != nil {
 		t.Fatalf("Folders: %v", err)
 	}
@@ -159,7 +160,7 @@ func TestResilientFoldersDelegates(t *testing.T) {
 func TestResilientFoldersWithoutSupport(t *testing.T) {
 	r := Wrap(&stubMailbox{}, Config{InitialDelay: time.Millisecond})
 
-	folders, err := r.Folders()
+	folders, err := r.Folders(t.Context())
 	if err != nil {
 		t.Fatalf("Folders: %v", err)
 	}
@@ -172,7 +173,7 @@ func TestResilientInFolderDelegatesAndWraps(t *testing.T) {
 	mb := &folderedMailbox{folders: []string{"INBOX", "steuern"}}
 	r := Wrap(mb, Config{InitialDelay: time.Millisecond})
 
-	scoped, err := r.InFolder("steuern")
+	scoped, err := r.InFolder(t.Context(), "steuern")
 	if err != nil {
 		t.Fatalf("InFolder: %v", err)
 	}
@@ -182,7 +183,7 @@ func TestResilientInFolderDelegatesAndWraps(t *testing.T) {
 	if _, ok := scoped.(*Mailbox); !ok {
 		t.Fatalf("scoped = %T, want resilience-wrapped *Mailbox", scoped)
 	}
-	ids, err := scoped.ListUnread()
+	ids, err := scoped.ListUnread(t.Context())
 	if err != nil {
 		t.Fatalf("scoped ListUnread: %v", err)
 	}
@@ -190,7 +191,7 @@ func TestResilientInFolderDelegatesAndWraps(t *testing.T) {
 		t.Errorf("scoped ids = %v", ids)
 	}
 
-	if _, err := r.InFolder("nope"); err == nil {
+	if _, err := r.InFolder(t.Context(), "nope"); err == nil {
 		t.Error("unknown folder accepted")
 	}
 }
@@ -198,7 +199,7 @@ func TestResilientInFolderDelegatesAndWraps(t *testing.T) {
 func TestResilientInFolderWithoutSupport(t *testing.T) {
 	r := Wrap(&stubMailbox{ids: []string{"m1.eml"}}, Config{InitialDelay: time.Millisecond})
 
-	scoped, err := r.InFolder("INBOX")
+	scoped, err := r.InFolder(t.Context(), "INBOX")
 	if err != nil {
 		t.Fatalf("InFolder INBOX: %v", err)
 	}
@@ -207,7 +208,7 @@ func TestResilientInFolderWithoutSupport(t *testing.T) {
 		t.Errorf("scoped = %v, want the wrapper itself for INBOX", scoped)
 	}
 
-	if _, err := r.InFolder("steuern"); err == nil || !strings.Contains(err.Error(), "folder") {
+	if _, err := r.InFolder(t.Context(), "steuern"); err == nil || !strings.Contains(err.Error(), "folder") {
 		t.Errorf("err = %v, want no-folder-support error", err)
 	}
 }
@@ -216,13 +217,13 @@ func TestResilientCurationDelegates(t *testing.T) {
 	mb := &curatedMailbox{}
 	r := Wrap(mb, Config{InitialDelay: time.Millisecond})
 
-	if err := r.Archive("a.eml"); err != nil {
+	if err := r.Archive(t.Context(), "a.eml"); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 	if len(mb.archived) != 1 || mb.archived[0] != "a.eml" {
 		t.Errorf("archived = %v", mb.archived)
 	}
-	if err := r.Delete("d.eml"); err != nil {
+	if err := r.Delete(t.Context(), "d.eml"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if len(mb.deleted) != 1 || mb.deleted[0] != "d.eml" {
@@ -233,10 +234,10 @@ func TestResilientCurationDelegates(t *testing.T) {
 func TestResilientCurationWithoutSupport(t *testing.T) {
 	r := Wrap(&stubMailbox{}, Config{InitialDelay: time.Millisecond})
 
-	if err := r.Archive("a.eml"); err == nil || !strings.Contains(err.Error(), "curation") {
+	if err := r.Archive(t.Context(), "a.eml"); err == nil || !strings.Contains(err.Error(), "curation") {
 		t.Errorf("Archive err = %v, want curation-capability error", err)
 	}
-	if err := r.Delete("d.eml"); err == nil || !strings.Contains(err.Error(), "curation") {
+	if err := r.Delete(t.Context(), "d.eml"); err == nil || !strings.Contains(err.Error(), "curation") {
 		t.Errorf("Delete err = %v, want curation-capability error", err)
 	}
 }

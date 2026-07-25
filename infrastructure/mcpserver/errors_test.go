@@ -23,19 +23,21 @@ var errBoxBroken = errors.New("mailbox broken")
 // never swallow it.
 type brokenBox struct{}
 
-func (brokenBox) ListUnread() ([]string, error)           { return nil, errBoxBroken }
-func (brokenBox) Fetch(string) ([]byte, error)            { return nil, errBoxBroken }
-func (brokenBox) MarkSeen(string) error                   { return errBoxBroken }
-func (brokenBox) Folders() ([]string, error)              { return nil, errBoxBroken }
-func (brokenBox) InFolder(string) (domain.Mailbox, error) { return nil, errBoxBroken }
-func (brokenBox) Archive(string) error                    { return errBoxBroken }
-func (brokenBox) Delete(string) error                     { return errBoxBroken }
+func (brokenBox) ListUnread(context.Context) ([]string, error)  { return nil, errBoxBroken }
+func (brokenBox) Fetch(context.Context, string) ([]byte, error) { return nil, errBoxBroken }
+func (brokenBox) MarkSeen(context.Context, string) error        { return errBoxBroken }
+func (brokenBox) Folders(context.Context) ([]string, error)     { return nil, errBoxBroken }
+func (brokenBox) InFolder(context.Context, string) (domain.Mailbox, error) {
+	return nil, errBoxBroken
+}
+func (brokenBox) Archive(context.Context, string) error { return errBoxBroken }
+func (brokenBox) Delete(context.Context, string) error  { return errBoxBroken }
 
 // listOnlyBox lists one unread id but cannot fetch it — the summarize
 // prompt must skip it rather than fail the whole summary.
 type listOnlyBox struct{ brokenBox }
 
-func (listOnlyBox) ListUnread() ([]string, error) { return []string{"ghost.eml"}, nil }
+func (listOnlyBox) ListUnread(context.Context) ([]string, error) { return []string{"ghost.eml"}, nil }
 
 // brokenStore fails every outbox persistence operation.
 type brokenStore struct{}

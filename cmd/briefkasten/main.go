@@ -52,7 +52,12 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
-func contextTODO() context.Context { return context.Background() }
+// commandContext is the context for a one-shot CLI command. There is no
+// longer-lived request to inherit from and no deadline worth inventing:
+// a human at a terminal decides when they have waited long enough, and
+// Ctrl-C — which still kills the process outright here — is how they say
+// so. The server has a real one; see the signal context in serve.
+func commandContext() context.Context { return context.Background() }
 
 // serveOptions are the flags accepted by the serve command.
 type serveOptions struct {
@@ -135,14 +140,33 @@ func serve(args []string) int {
 	// email://inbox instead of making them poll. Best-effort — the mailbox
 	// stays pollable if watching fails or is unsupported.
 	if watcher := cfg.BuildWatcher(); watcher != nil {
+		// Reconnecting backends (IMAP IDLE) only return once they give up, so
+		// without this hook a server that is down for hours is indistinguishable
+		// from a mailbox that is simply quiet. Optional capability: backends that
+		// cannot fail mid-flight (maildir) need no stub.
+		if r, ok := watcher.(interface {
+			SetRetryNotify(func(attempt int, delay time.Duration, err error))
+		}); ok {
+			r.SetRetryNotify(func(attempt int, delay time.Duration, err error) {
+				log.Warn().Err(err).Int("attempt", attempt).Dur("retry_in", delay).
+					Msg("inbox watcher reconnecting")
+			})
+		}
 		go func() {
 			err := watcher.Watch(ctx, func() {
 				if nerr := srv.NotifyResourceUpdated(briefkasten.InboxResourceURI); nerr != nil {
 					log.Debug().Err(nerr).Msg("inbox update notify failed")
 				}
 			})
-			if err != nil && ctx.Err() == nil {
-				log.Warn().Err(err).Msg("inbox watcher stopped; subscribers fall back to polling")
+			if ctx.Err() != nil {
+				return // shutting down, not a failure
+			}
+			// The watcher stopped for good — push notifications are dead for the
+			// rest of this process's life, and only this line says so.
+			if err != nil {
+				log.Error().Err(err).Msg("inbox watcher stopped; subscribers fall back to polling")
+			} else {
+				log.Warn().Msg("inbox watcher exited; subscribers fall back to polling")
 			}
 		}()
 	}

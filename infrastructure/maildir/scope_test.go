@@ -1,6 +1,7 @@
 package maildir
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -15,7 +16,7 @@ func seedReadAndUnread(t *testing.T) *Mailbox {
 	mb, root := newDir(t)
 	drop(t, root, "a.eml", "From: a@b.c\r\nSubject: Alpha\r\n\r\nalpha body")
 	drop(t, root, "b.eml", "From: a@b.c\r\nSubject: Beta\r\n\r\nbeta body")
-	if err := mb.MarkSeen("a.eml"); err != nil {
+	if err := mb.MarkSeen(t.Context(), "a.eml"); err != nil {
 		t.Fatalf("MarkSeen: %v", err)
 	}
 	return mb
@@ -32,7 +33,7 @@ func TestListByScope(t *testing.T) {
 		{domain.ScopeRead, []string{"a.eml"}},
 		{domain.ScopeAll, []string{"a.eml", "b.eml"}},
 	} {
-		ids, err := mb.List(tc.scope)
+		ids, err := mb.List(t.Context(), tc.scope)
 		if err != nil {
 			t.Fatalf("List(%s): %v", tc.scope, err)
 		}
@@ -49,7 +50,7 @@ func TestListByScope(t *testing.T) {
 
 func TestListRejectsUnknownScope(t *testing.T) {
 	mb, _ := newDir(t)
-	if _, err := mb.List(domain.Scope("archived")); !errors.Is(err, domain.ErrBadScope) {
+	if _, err := mb.List(t.Context(), domain.Scope("archived")); !errors.Is(err, domain.ErrBadScope) {
 		t.Fatalf("List(archived) error = %v, want ErrBadScope", err)
 	}
 }
@@ -59,7 +60,7 @@ func TestListRejectsUnknownScope(t *testing.T) {
 func TestFetchReadMessageLeavesItRead(t *testing.T) {
 	mb := seedReadAndUnread(t)
 
-	raw, err := mb.Fetch("a.eml")
+	raw, err := mb.Fetch(t.Context(), "a.eml")
 	if err != nil {
 		t.Fatalf("Fetch read message: %v", err)
 	}
@@ -67,7 +68,7 @@ func TestFetchReadMessageLeavesItRead(t *testing.T) {
 		t.Fatalf("Fetch = %q, want it to contain %q", raw, want)
 	}
 
-	unread, err := mb.List(domain.ScopeUnread)
+	unread, err := mb.List(t.Context(), domain.ScopeUnread)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -78,7 +79,7 @@ func TestFetchReadMessageLeavesItRead(t *testing.T) {
 
 func TestFetchUnknownIDStillFails(t *testing.T) {
 	mb := seedReadAndUnread(t)
-	if _, err := mb.Fetch("nope.eml"); err == nil {
+	if _, err := mb.Fetch(t.Context(), "nope.eml"); err == nil {
 		t.Fatal("Fetch(nope.eml) = nil error, want failure")
 	}
 }
@@ -86,7 +87,7 @@ func TestFetchUnknownIDStillFails(t *testing.T) {
 func TestSearchScopeCoversReadMail(t *testing.T) {
 	mb := seedReadAndUnread(t)
 
-	ids, err := mb.SearchScope(domain.ScopeRead, "alpha")
+	ids, err := mb.SearchScope(t.Context(), domain.ScopeRead, "alpha")
 	if err != nil {
 		t.Fatalf("SearchScope: %v", err)
 	}
@@ -95,7 +96,7 @@ func TestSearchScopeCoversReadMail(t *testing.T) {
 	}
 
 	// The unread-only default must not see it.
-	ids, err = mb.Search("alpha")
+	ids, err = mb.Search(t.Context(), "alpha")
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -107,10 +108,10 @@ func TestSearchScopeCoversReadMail(t *testing.T) {
 // Curation reaches read mail too, and stays a soft move.
 func TestArchiveReadMessage(t *testing.T) {
 	mb := seedReadAndUnread(t)
-	if err := mb.Archive("a.eml"); err != nil {
+	if err := mb.Archive(t.Context(), "a.eml"); err != nil {
 		t.Fatalf("Archive read message: %v", err)
 	}
-	ids, err := mb.List(domain.ScopeAll)
+	ids, err := mb.List(t.Context(), domain.ScopeAll)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -121,10 +122,10 @@ func TestArchiveReadMessage(t *testing.T) {
 
 func TestDeleteReadMessage(t *testing.T) {
 	mb := seedReadAndUnread(t)
-	if err := mb.Delete("a.eml"); err != nil {
+	if err := mb.Delete(t.Context(), "a.eml"); err != nil {
 		t.Fatalf("Delete read message: %v", err)
 	}
-	ids, err := mb.List(domain.ScopeAll)
+	ids, err := mb.List(t.Context(), domain.ScopeAll)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -138,17 +139,17 @@ func TestDeleteReadMessage(t *testing.T) {
 func TestMarkSeenIsIdempotent(t *testing.T) {
 	mb := seedReadAndUnread(t)
 
-	if err := mb.MarkSeen("a.eml"); err != nil {
+	if err := mb.MarkSeen(t.Context(), "a.eml"); err != nil {
 		t.Fatalf("second MarkSeen: %v", err)
 	}
-	read, err := mb.List(domain.ScopeRead)
+	read, err := mb.List(t.Context(), domain.ScopeRead)
 	if err != nil {
 		t.Fatalf("List(read): %v", err)
 	}
 	if len(read) != 1 || read[0] != "a.eml" {
 		t.Fatalf("read = %v, want [a.eml]", read)
 	}
-	raw, err := mb.Fetch("a.eml")
+	raw, err := mb.Fetch(t.Context(), "a.eml")
 	if err != nil {
 		t.Fatalf("Fetch after re-mark: %v", err)
 	}
@@ -163,11 +164,46 @@ func TestMarkSeenIsIdempotent(t *testing.T) {
 func TestMarkSeenUnknownIDIsBadID(t *testing.T) {
 	mb := seedReadAndUnread(t)
 
-	err := mb.MarkSeen("nope.eml")
+	err := mb.MarkSeen(t.Context(), "nope.eml")
 	if err == nil {
 		t.Fatal("MarkSeen of unknown id accepted")
 	}
 	if !errors.Is(err, domain.ErrBadID) {
 		t.Errorf("MarkSeen error = %v, want ErrBadID", err)
+	}
+}
+
+// The dir backend cannot be interrupted mid-syscall, so its whole
+// context contract is the check at the door: a caller who has already
+// given up gets a context error and the mailbox is not touched. The
+// distinction matters upstream — resilience must not read this as the
+// disk being broken.
+func TestDirMailboxRefusesCancelledContext(t *testing.T) {
+	mb := seedReadAndUnread(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	for name, op := range map[string]func() error{
+		"List":         func() error { _, err := mb.List(ctx, domain.ScopeAll); return err },
+		"Fetch":        func() error { _, err := mb.Fetch(ctx, "a.eml"); return err },
+		"MarkSeen":     func() error { return mb.MarkSeen(ctx, "b.eml") },
+		"Folders":      func() error { _, err := mb.Folders(ctx); return err },
+		"InFolder":     func() error { _, err := mb.InFolder(ctx, "work"); return err },
+		"Archive":      func() error { return mb.Archive(ctx, "b.eml") },
+		"Delete":       func() error { return mb.Delete(ctx, "b.eml") },
+		"CurationPlan": func() error { _, err := mb.CurationPlan(ctx); return err },
+	} {
+		if err := op(); !errors.Is(err, context.Canceled) {
+			t.Errorf("%s = %v, want it to wrap context.Canceled", name, err)
+		}
+	}
+
+	// Nothing moved: the refusals were refusals, not half-done work.
+	all, err := mb.List(t.Context(), domain.ScopeAll)
+	if err != nil {
+		t.Fatalf("List after the cancelled calls: %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("mailbox = %v, want both messages untouched", all)
 	}
 }

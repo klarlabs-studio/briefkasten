@@ -1,6 +1,7 @@
 package application
 
 import (
+	"context"
 	"errors"
 	"sync"
 
@@ -34,41 +35,47 @@ func (s *Switchable) current() domain.Mailbox {
 }
 
 // ListUnread lists the current backend's unread ids.
-func (s *Switchable) ListUnread() ([]string, error) { return s.current().ListUnread() }
+func (s *Switchable) ListUnread(ctx context.Context) ([]string, error) {
+	return s.current().ListUnread(ctx)
+}
 
 // List forwards to the backend's ScopedMailbox when it has one.
-func (s *Switchable) List(scope domain.Scope) ([]string, error) {
-	return listMailbox(s.current(), scope)
+func (s *Switchable) List(ctx context.Context, scope domain.Scope) ([]string, error) {
+	return listMailbox(ctx, s.current(), scope)
 }
 
 // Fetch returns the raw message bytes from the current backend.
-func (s *Switchable) Fetch(id string) ([]byte, error) { return s.current().Fetch(id) }
+func (s *Switchable) Fetch(ctx context.Context, id string) ([]byte, error) {
+	return s.current().Fetch(ctx, id)
+}
 
 // MarkSeen acknowledges a message on the current backend.
-func (s *Switchable) MarkSeen(id string) error { return s.current().MarkSeen(id) }
+func (s *Switchable) MarkSeen(ctx context.Context, id string) error {
+	return s.current().MarkSeen(ctx, id)
+}
 
 // Search forwards to the backend's Searcher or the generic fallback.
-func (s *Switchable) Search(query string) ([]string, error) {
-	return searchMailbox(s.current(), domain.ScopeUnread, query)
+func (s *Switchable) Search(ctx context.Context, query string) ([]string, error) {
+	return searchMailbox(ctx, s.current(), domain.ScopeUnread, query)
 }
 
 // SearchScope forwards to the backend's ScopedSearcher or the fallback.
-func (s *Switchable) SearchScope(scope domain.Scope, query string) ([]string, error) {
-	return searchMailbox(s.current(), scope, query)
+func (s *Switchable) SearchScope(ctx context.Context, scope domain.Scope, query string) ([]string, error) {
+	return searchMailbox(ctx, s.current(), scope, query)
 }
 
 // Folders forwards to the backend when it supports folders.
-func (s *Switchable) Folders() ([]string, error) {
+func (s *Switchable) Folders(ctx context.Context) ([]string, error) {
 	if fm, ok := s.current().(domain.FolderMailbox); ok {
-		return fm.Folders()
+		return fm.Folders(ctx)
 	}
 	return []string{"INBOX"}, nil
 }
 
 // InFolder forwards to the backend when it supports folders.
-func (s *Switchable) InFolder(name string) (domain.Mailbox, error) {
+func (s *Switchable) InFolder(ctx context.Context, name string) (domain.Mailbox, error) {
 	if fm, ok := s.current().(domain.FolderMailbox); ok {
-		return fm.InFolder(name)
+		return fm.InFolder(ctx, name)
 	}
 	if name == "INBOX" {
 		return s, nil
@@ -77,32 +84,32 @@ func (s *Switchable) InFolder(name string) (domain.Mailbox, error) {
 }
 
 // Archive forwards to the backend's Curator.
-func (s *Switchable) Archive(id string) error {
+func (s *Switchable) Archive(ctx context.Context, id string) error {
 	cu, ok := s.current().(domain.Curator)
 	if !ok {
 		return errors.New("briefkasten: backend has no curation support")
 	}
-	return cu.Archive(id)
+	return cu.Archive(ctx, id)
 }
 
 // Delete forwards to the backend's Curator.
-func (s *Switchable) Delete(id string) error {
+func (s *Switchable) Delete(ctx context.Context, id string) error {
 	cu, ok := s.current().(domain.Curator)
 	if !ok {
 		return errors.New("briefkasten: backend has no curation support")
 	}
-	return cu.Delete(id)
+	return cu.Delete(ctx, id)
 }
 
 // CurationPlan forwards to the backend's inspector. The destinations
 // belong to whichever backend is current, so a runtime swap changes the
 // answer — which is exactly why it is asked rather than remembered.
-func (s *Switchable) CurationPlan() (domain.CurationPlan, error) {
+func (s *Switchable) CurationPlan(ctx context.Context) (domain.CurationPlan, error) {
 	ci, ok := s.current().(domain.CurationInspector)
 	if !ok {
 		return domain.CurationPlan{}, errors.New("briefkasten: backend cannot report curation destinations")
 	}
-	return ci.CurationPlan()
+	return ci.CurationPlan(ctx)
 }
 
 var (

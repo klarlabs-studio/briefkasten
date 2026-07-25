@@ -144,7 +144,7 @@ func TestCurationOverrideShortCircuits(t *testing.T) {
 		{m.archiveTarget(), "Archiv/2026"},
 		{m.trashTarget(), "Müll"},
 	} {
-		got, err := m.planCurationFolder(nil, tc.target)
+		got, err := m.planCurationFolder(t.Context(), nil, tc.target)
 		if err != nil {
 			t.Fatalf("override resolve: %v", err)
 		}
