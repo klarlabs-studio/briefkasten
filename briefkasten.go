@@ -35,6 +35,7 @@ type (
 	Searcher        = domain.Searcher
 	ScopedSearcher  = domain.ScopedSearcher
 	FolderMailbox   = domain.FolderMailbox
+	FolderManager   = domain.FolderManager
 	Curator         = domain.Curator
 	BulkMailbox     = domain.BulkMailbox
 	BulkCurator     = domain.BulkCurator
@@ -69,6 +70,18 @@ var ErrBulkSize = domain.ErrBulkSize
 
 // ErrFetchTooLarge refuses a batch measured over the fetch budget.
 var ErrFetchTooLarge = domain.ErrFetchTooLarge
+
+// ErrBadFolder rejects a folder name the backend cannot use, or one
+// naming a folder that is not there.
+var ErrBadFolder = domain.ErrBadFolder
+
+// ErrFolderNotEmpty refuses to delete a folder that still holds messages
+// or subfolders — briefkasten never destroys mail.
+var ErrFolderNotEmpty = domain.ErrFolderNotEmpty
+
+// ErrFolderProtected refuses to create or delete the inbox or a curation
+// destination.
+var ErrFolderProtected = domain.ErrFolderProtected
 
 // MaxBulkIDs caps how many messages one bulk call may act on.
 const MaxBulkIDs = domain.MaxBulkIDs

@@ -11,8 +11,8 @@ Hexagonal, with the dependency arrow pointing inward at `domain/`.
 - **`domain/`** — ports and invariants. Imports no infrastructure. `Mailbox` is
   the core port (`ListUnread`, `Fetch`, `MarkSeen`); optional capabilities are
   separate interfaces a backend may implement: `ScopedMailbox`, `Searcher`,
-  `ScopedSearcher`, `FolderMailbox`, `Curator`. Outbound lives here too
-  (`OutboundMessage`, `Sender`, validation).
+  `ScopedSearcher`, `FolderMailbox`, `FolderManager`, `Curator`. Outbound lives
+  here too (`OutboundMessage`, `Sender`, validation).
 - **`application/`** — use cases. The single code path every interface shares:
   the MCP tools and the CLI both call `Service`. Confirmation of destructive
   operations is an *interface* concern; the use cases run after approval.
@@ -28,6 +28,20 @@ Hexagonal, with the dependency arrow pointing inward at `domain/`.
   COPY + `\Seen`, deliberately not MOVE, because MOVE expunges the source. It
   also verifies the UID is present first: servers answer OK to COPY of a UID
   they do not hold, which would report a move that never happened.
+- **The invariant survives folder deletion.** `FolderManager.DeleteFolder` is the
+  one operation that *could* destroy mail — IMAP's `DELETE` takes a mailbox's
+  messages with it — so it only ever removes an empty folder. A folder holding
+  mail is refused with the count and the remedy (move or delete the messages,
+  each itself a soft move); subfolders, `INBOX`, and either curation destination
+  are refused too. There is no force flag: a flag that switches the invariant
+  off is the invariant not holding. The destinations are resolved through the
+  same path curation resolves them (`domain.CheckFolderDeletable` takes a
+  `CurationPlan`), so the folder protected is always the folder mail actually
+  goes to, override included.
+  The emptiness check is racy by construction and documented as such: it is
+  taken immediately before the delete, but on IMAP a message arriving in that
+  window is deleted with the folder. The maildir backend loses the race safely —
+  `os.Remove` on a directory that gained a file fails rather than deleting it.
 - **The destination is asked for, never assumed.** Curation folders resolve
   through config override → RFC 6154 SPECIAL-USE → the personal namespace's
   conventional path → a known localized/legacy name. A mailbox rooted at
@@ -60,6 +74,11 @@ Hexagonal, with the dependency arrow pointing inward at `domain/`.
   swap) and `infrastructure/resilience.Mailbox` both re-implement every optional
   interface. Adding a domain capability means updating both, or it silently
   disappears behind a decorator.
+- **Caller mistakes are not backend health.** `ErrBadID`, `ErrBulkSize`,
+  `ErrFetchTooLarge`, `ErrBadFolder`, `ErrFolderNotEmpty` and
+  `ErrFolderProtected` are registered in `infrastructure/resilience` as neither
+  retryable nor a breaker signal: the server answered correctly, it is the
+  request that will not do, and a retry would only reach the same refusal.
 
 ## Security model
 
@@ -69,7 +88,8 @@ reachable from a crafted email.
 
 - Every mutating tool gates on human confirmation via
   `mcpserver.ConfirmAction` — MCP elicitation, or an explicit `confirm=true`.
-  That is `email.send`, `email.archive`, `email.delete`, and `config.set`.
+  That is `email.send`, `email.archive`, `email.delete`, `email.folder_create`,
+  `email.folder_delete`, and `config.set`.
   `ConfirmAction` is exported so the root package's runtime tools use the same
   gate rather than a parallel one.
 - **Credentials are bound to their endpoint.** `config.set` is a partial update;

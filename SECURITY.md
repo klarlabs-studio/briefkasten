@@ -111,7 +111,8 @@ latest release.
 These are the things worth your time and ours.
 
 - **Defeating the human confirmation gate.** `email.send`,
-  `email.archive`, `email.delete`, and `config.set` all require human
+  `email.archive`, `email.delete`, `email.folder_create`,
+  `email.folder_delete`, and `config.set` all require human
   approval — MCP elicitation, or an explicit `confirm=true` the caller
   may only set after asking the user. Any path that mutates state
   without that gate firing is a vulnerability: a code path that acts
@@ -144,11 +145,28 @@ These are the things worth your time and ours.
   ids, folder names, and error strings all reach that UI; treat every
   one of them as attacker-controlled.
 - **Path traversal.** Message ids and folder names must not escape the
-  configured maildir or mailbox (`domain.ErrBadID` is the rejection).
-  Any read or write outside it — including through curation
-  destinations or the outbox store — is in scope, as is escaping the
-  startup maildir through a `config.set` field patch, which without its
-  confinement check would be an arbitrary-file-read primitive.
+  configured maildir or mailbox (`domain.ErrBadID` and
+  `domain.ErrBadFolder` are the rejections). Any read or write outside
+  it — including through curation destinations or the outbox store — is
+  in scope, as is escaping the startup maildir through a `config.set`
+  field patch, which without its confinement check would be an
+  arbitrary-file-read primitive. Folder creation makes this a *write*
+  boundary as well as a read one, and the reserved curated names are
+  part of it: a folder that shadows where curation files mail is the
+  same class of problem as one outside the root.
+
+- **Destroying mail through folder removal.** `email.folder_delete`
+  removes empty structure only. Any path by which it removes a folder
+  that holds messages — or removes the inbox, or a folder that curation
+  resolves to — is a vulnerability, whatever the route: a count read
+  from a stale cache, a check that compares the requested name while the
+  delete acts on a different resolved one, a subfolder holding mail
+  under a folder reported empty. The emptiness check runs immediately
+  before the delete; *widening* that window is in scope, and the
+  irreducible one round trip on IMAP is documented design, since IMAP
+  offers no conditional delete. On the maildir backend there is no
+  window: removal of a directory that gained a message fails rather than
+  destroying it.
 - **Header injection in outbound mail.** Addresses and content types are
   rejected when they carry CR or LF; a way to smuggle headers into a
   queued message is in scope.
@@ -178,6 +196,16 @@ everyone a round trip.
   and Trash folders with the original marked seen, deliberately not
   `MOVE`. "`email.delete` did not actually destroy the message" is the
   design, not a bug. Briefkasten never destroys mail.
+
+- **`email.folder_delete` refuses a folder that holds mail.** There is
+  no force flag, and its absence is deliberate. The operation exists to
+  remove empty structure, not to destroy messages — so a folder holding
+  mail, or a subfolder, is refused with the count and a pointer to move
+  or delete the messages first, each of which is itself a soft move.
+  "Folder deletion does not work on a folder with mail in it" is the
+  feature. Deleting the inbox, or the folder `email.archive` and
+  `email.delete` file into, is refused for the same reason: removing the
+  destination would break curation for every later call.
 - **`email.fetch` never sets `\Seen`.** Reading is read-only in every
   sense (`BODY.PEEK[]` on IMAP, read-in-place on the dir backend), so an
   agent looking at mail cannot disturb the unread backlog. "I read a
@@ -233,10 +261,12 @@ a message body can imitate it. Briefkasten's answer is structural
 instead:
 
 - **Every mutating tool is gated on a human.** `email.send`,
-  `email.archive`, `email.delete`, `config.set`. Reads are ungated
+  `email.archive`, `email.delete`, `email.folder_create`,
+  `email.folder_delete`, `config.set`. Reads are ungated
   because no read is irreversible.
 - **Curation is soft.** Even an approved delete is a move, so a
-  mistaken approval is recoverable.
+  mistaken approval is recoverable — and folder deletion cannot turn it
+  hard, because a folder holding mail is refused outright.
 - **There is no predicate or "all matching" form.** Bulk tools take
   explicit ids the caller enumerated first — one injected sentence
   cannot address an unbounded set of messages.

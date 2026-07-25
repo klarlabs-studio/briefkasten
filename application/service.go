@@ -156,6 +156,48 @@ func (s *Service) Folders(ctx context.Context, account string) ([]string, error)
 	return []string{"INBOX"}, nil
 }
 
+// CreateFolder creates a folder on the resolved account. Idempotent: a
+// folder that already exists is the state the caller asked for, so the
+// call succeeds and changes nothing. The caller must have obtained human
+// confirmation.
+func (s *Service) CreateFolder(ctx context.Context, account, name string) error {
+	fm, err := s.folderManager(ctx, account)
+	if err != nil {
+		return err
+	}
+	return fm.CreateFolder(ctx, name)
+}
+
+// DeleteFolder removes an empty folder from the resolved account. A
+// folder holding messages is refused with the count rather than
+// destroyed — see domain.FolderManager. The caller must have obtained
+// human confirmation.
+func (s *Service) DeleteFolder(ctx context.Context, account, name string) error {
+	fm, err := s.folderManager(ctx, account)
+	if err != nil {
+		return err
+	}
+	return fm.DeleteFolder(ctx, name)
+}
+
+// folderManager resolves the account's mailbox and asks for its folder
+// management. The folder argument is deliberately absent: a folder name
+// here is what would be created or removed, resolved against the
+// account's root, so routing the call into a folder first would make
+// "Work" mean something different depending on where the caller happened
+// to be looking.
+func (s *Service) folderManager(ctx context.Context, account string) (domain.FolderManager, error) {
+	box, err := s.Resolve(ctx, account, "")
+	if err != nil {
+		return nil, err
+	}
+	fm, ok := box.(domain.FolderManager)
+	if !ok {
+		return nil, errNoFolderManagement
+	}
+	return fm, nil
+}
+
 // Accounts returns the configured account names; "default" is first.
 func (s *Service) Accounts() []string {
 	names := []string{"default"}

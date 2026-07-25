@@ -105,6 +105,29 @@ func (s *Switchable) InFolder(ctx context.Context, name string) (domain.Mailbox,
 	return nil, errors.New("briefkasten: backend has no folder support")
 }
 
+// CreateFolder forwards to the backend's FolderManager. Without the
+// forward the capability would vanish behind this decorator and every
+// folder tool would report a backend that cannot manage folders.
+func (s *Switchable) CreateFolder(ctx context.Context, name string) error {
+	fm, ok := s.current().(domain.FolderManager)
+	if !ok {
+		return errNoFolderManagement
+	}
+	return fm.CreateFolder(ctx, name)
+}
+
+// DeleteFolder forwards to the backend's FolderManager. The refusals —
+// non-empty, protected, bad name — are the backend's to make: they
+// depend on what that backend holds and where its curation files, and a
+// swap changes both.
+func (s *Switchable) DeleteFolder(ctx context.Context, name string) error {
+	fm, ok := s.current().(domain.FolderManager)
+	if !ok {
+		return errNoFolderManagement
+	}
+	return fm.DeleteFolder(ctx, name)
+}
+
 // Archive forwards to the backend's Curator.
 func (s *Switchable) Archive(ctx context.Context, id string) error {
 	cu, ok := s.current().(domain.Curator)
@@ -147,8 +170,15 @@ func (s *Switchable) CurationPlan(ctx context.Context) (domain.CurationPlan, err
 	return ci.CurationPlan(ctx)
 }
 
+// errNoFolderManagement is the one answer both decorators and the
+// service give for a backend that only lists folders. Shared so the
+// three layers cannot drift into three different phrasings of the same
+// missing capability.
+var errNoFolderManagement = errors.New("briefkasten: backend cannot create or delete folders")
+
 var (
 	_ domain.Mailbox           = (*Switchable)(nil)
+	_ domain.FolderManager     = (*Switchable)(nil)
 	_ domain.ScopedMailbox     = (*Switchable)(nil)
 	_ domain.Searcher          = (*Switchable)(nil)
 	_ domain.ScopedSearcher    = (*Switchable)(nil)

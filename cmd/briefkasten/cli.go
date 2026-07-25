@@ -46,6 +46,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	account := fs.String("account", "", "named account from the config")
 	asJSON := fs.Bool("json", false, "machine-readable output")
 	curation := fs.Bool("curation", false, "with 'folders': show where archive and delete would file, and why")
+	createFolder := fs.String("create", "", "with 'folders': create this folder (idempotent)")
+	deleteFolder := fs.String("delete", "", "with 'folders': delete this folder; refused unless it is empty")
 	yes := fs.Bool("yes", false, "skip confirmation prompts")
 	configPath := fs.String("config", "", "config file (default: $BRIEFKASTEN_CONFIG or ./briefkasten.yaml)")
 	to := fs.String("to", "", "recipients, comma-separated (send)")
@@ -163,6 +165,34 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		emit(strings.Join(names, "\n"), map[string]any{"profiles": names, "active_backend": active})
 
 	case "folders":
+		if *createFolder != "" && *deleteFolder != "" {
+			fmt.Fprintln(stderr, "folders: pass either --create or --delete, not both")
+			return 2
+		}
+		if *createFolder != "" {
+			// No prompt: creating a folder moves no mail and destroys
+			// nothing, which is the line the CLI already draws — `seen`
+			// and `send` do not prompt either, only the operations that
+			// relocate mail do.
+			if err := svc.CreateFolder(ctx, *account, *createFolder); err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			emit("created: "+*createFolder, map[string]any{"ok": true, "folder": *createFolder})
+			break
+		}
+		if *deleteFolder != "" {
+			if !*yes && !confirmFolderPrompt(stdin, stdout, *deleteFolder) {
+				emit("aborted", map[string]any{"ok": false, "aborted": true})
+				return 1
+			}
+			if err := svc.DeleteFolder(ctx, *account, *deleteFolder); err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			emit("deleted: "+*deleteFolder, map[string]any{"ok": true, "folder": *deleteFolder})
+			break
+		}
 		// --curation answers "where would archive and delete file?"
 		// before anything moves, so a wrong destination is caught by
 		// reading rather than by finding mail somewhere unexpected.
@@ -359,6 +389,15 @@ folders --curation shows where archive and delete would file and how each
 destination was decided (override, declared, convention, alias, create) —
 without moving anything.
 
+folders --create NAME makes a folder (idempotent: one that already exists
+is a success), resolved into the account's folder space — on a server
+rooting folders under the inbox, --create Work makes INBOX.Work. folders
+--delete NAME removes an EMPTY folder and prompts y/N unless --yes: one
+still holding messages is refused with the count, so archive or delete
+those first (both are soft moves) and then delete the folder. There is no
+force flag, and the inbox and the curation destinations are refused
+outright.
+
 list and search take --scope unread (default), read, or all. Listing and
 reading never change a message's state.
 
@@ -451,11 +490,26 @@ func printVersion(stdout io.Writer, asJSON bool) {
 // radius it covers: the count, the destination, and the ids themselves.
 func confirmPrompt(stdin io.Reader, stdout io.Writer, action string, ids []string, destination string) bool {
 	if len(ids) == 1 {
-		fmt.Fprintf(stdout, "%s message %q? %s [y/N] ", action, ids[0], movedWhere(destination, false))
-	} else {
-		fmt.Fprintf(stdout, "%s %d messages (%s)? %s [y/N] ",
-			action, len(ids), strings.Join(ids, ", "), movedWhere(destination, true))
+		return askYesNo(stdin, stdout, fmt.Sprintf("%s message %q? %s",
+			action, ids[0], movedWhere(destination, false)))
 	}
+	return askYesNo(stdin, stdout, fmt.Sprintf("%s %d messages (%s)? %s",
+		action, len(ids), strings.Join(ids, ", "), movedWhere(destination, true)))
+}
+
+// confirmFolderPrompt guards a folder deletion. It says what the
+// operation cannot do — a folder holding mail is refused, not emptied —
+// because that is what makes this a smaller decision than it sounds, and
+// the person answering cannot check it in the moment.
+func confirmFolderPrompt(stdin io.Reader, stdout io.Writer, name string) bool {
+	return askYesNo(stdin, stdout, fmt.Sprintf(
+		"delete folder %q? Only an empty folder is deleted — one still holding messages is refused with the count, so no mail is destroyed.",
+		name))
+}
+
+// askYesNo puts one question and accepts only an explicit yes.
+func askYesNo(stdin io.Reader, stdout io.Writer, question string) bool {
+	fmt.Fprintf(stdout, "%s [y/N] ", question)
 	line, _ := bufio.NewReader(stdin).ReadString('\n')
 	answer := strings.ToLower(strings.TrimSpace(line))
 	return answer == "y" || answer == "yes"

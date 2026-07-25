@@ -74,11 +74,18 @@ func Wrap(mb domain.Mailbox, cfg Config) *Mailbox {
 				// having learnt nothing about the server at all. A batch
 				// the caller shaped badly — malformed, or measured over the
 				// fetch budget — says exactly as little about the server:
-				// the backend answered the question correctly.
+				// the backend answered the question correctly. A folder
+				// request the backend refused — a name it cannot use, a
+				// folder that still holds mail, one briefkasten protects
+				// — is the same kind of answer: the server is working,
+				// and it is the request that will not do.
 				return err == nil ||
 					errors.Is(err, domain.ErrBadID) ||
 					errors.Is(err, domain.ErrBulkSize) ||
 					errors.Is(err, domain.ErrFetchTooLarge) ||
+					errors.Is(err, domain.ErrBadFolder) ||
+					errors.Is(err, domain.ErrFolderNotEmpty) ||
+					errors.Is(err, domain.ErrFolderProtected) ||
 					errors.Is(err, context.Canceled)
 			},
 		}),
@@ -97,9 +104,16 @@ func Wrap(mb domain.Mailbox, cfg Config) *Mailbox {
 			// answer any more. A batch that is malformed or measured over
 			// the fetch budget joins them: it is refused identically on
 			// every attempt, so retrying only spends the pre-flight round
-			// trip again on the caller's behalf.
+			// trip again on the caller's behalf. The folder refusals
+			// join them for the same reason and one of their own: a
+			// retried delete would re-count the folder and refuse
+			// again, and the only way a second attempt could differ is
+			// if the mail had moved in between — which is a decision
+			// for the human who was told the count, not for a backoff
+			// timer.
 			NonRetryableErrors: []error{
 				domain.ErrBadID, domain.ErrBulkSize, domain.ErrFetchTooLarge,
+				domain.ErrBadFolder, domain.ErrFolderNotEmpty, domain.ErrFolderProtected,
 				context.DeadlineExceeded, context.Canceled,
 			},
 			Jitter: true,
@@ -274,6 +288,37 @@ func (r *Mailbox) InFolder(ctx context.Context, name string) (domain.Mailbox, er
 	return Wrap(inner, Config{}), nil
 }
 
+// CreateFolder forwards to the wrapped backend's domain.FolderManager
+// through the pipeline. Without this forward the capability would vanish
+// behind the decorator and the folder tools would report a backend that
+// cannot manage folders.
+func (r *Mailbox) CreateFolder(ctx context.Context, name string) error {
+	fm, ok := r.mb.(domain.FolderManager)
+	if !ok {
+		return errNoFolderManagement
+	}
+	_, err := r.execute(ctx, func(ctx context.Context) (any, error) { return nil, fm.CreateFolder(ctx, name) })
+	return err
+}
+
+// DeleteFolder forwards to the wrapped backend's domain.FolderManager
+// through the pipeline. The whole check-then-delete sequence is one call
+// through it: splitting the count from the delete across two trips
+// through retry would widen the very window the backend works to keep
+// narrow.
+func (r *Mailbox) DeleteFolder(ctx context.Context, name string) error {
+	fm, ok := r.mb.(domain.FolderManager)
+	if !ok {
+		return errNoFolderManagement
+	}
+	_, err := r.execute(ctx, func(ctx context.Context) (any, error) { return nil, fm.DeleteFolder(ctx, name) })
+	return err
+}
+
+// errNoFolderManagement answers for a backend that can list folders but
+// not manage them.
+var errNoFolderManagement = errors.New("briefkasten: backend cannot create or delete folders")
+
 // Archive forwards to the wrapped backend's domain.Curator through the pipeline.
 func (r *Mailbox) Archive(ctx context.Context, id string) error {
 	cu, ok := r.mb.(domain.Curator)
@@ -316,6 +361,7 @@ var (
 	_ domain.Searcher          = (*Mailbox)(nil)
 	_ domain.ScopedSearcher    = (*Mailbox)(nil)
 	_ domain.FolderMailbox     = (*Mailbox)(nil)
+	_ domain.FolderManager     = (*Mailbox)(nil)
 	_ domain.Curator           = (*Mailbox)(nil)
 	_ domain.BulkMailbox       = (*Mailbox)(nil)
 	_ domain.BulkCurator       = (*Mailbox)(nil)
