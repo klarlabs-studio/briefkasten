@@ -16,7 +16,7 @@ including claims from subagents and from memory.
 Company: klarlabs — open-source Go tooling.
 What we're building: briefkasten, a mailbox served over MCP so agents can read,
 search, curate, and send mail through one contract instead of binding to IMAP.
-Phase: maintenance / hardening. Released and versioned; v0.21.0 current.
+Phase: maintenance / hardening. Released and versioned; v0.23.0 current.
 Stack: Go, hexagonal architecture, go-imap v2, go.klarlabs.de/mcp, goreleaser,
 warden commit gate, coverctl coverage gates.
 
@@ -36,6 +36,9 @@ never decides what an id may be used for. Fetch, mark-seen, archive, and delete
 all resolve an id across the whole mailbox.
 Never: report a curation success a backend did not perform — IMAP answers OK to
 COPY of a UID it does not hold, so verify presence before claiming a move.
+Never: hardcode an IMAP folder name. Servers root folders differently
+(`INBOX.Trash` vs `Trash`) and declare SPECIAL-USE inconsistently; resolve via
+override → SPECIAL-USE → namespace path, and create only inside the namespace.
 Always: gate a new mutating MCP tool through `mcpserver.ConfirmAction` and mark
 it `Destructive()`. Message content reaches every tool.
 Always: assert security fixes against observable output (bytes on disk, the tool
@@ -81,6 +84,10 @@ warden's pre-push gate runs exactly these, so failing locally is faster.
   across the whole mailbox, so the only difference between curating fresh and
   processed mail is which listing surfaced it. The confirmation gate is what
   restrains destructive work, not the read flag.
+- 2026-07-25: Discover curation folders rather than naming them. Hardcoded
+  `Archive`/`Trash` had never worked on an `INBOX.`-rooted server; asking the
+  server (SPECIAL-USE, then NAMESPACE) fixes the whole class, and the config
+  override exists for what neither answers.
 
 ## Active Patterns
 - "brief me" → /brief (reads ./memory/status.md)

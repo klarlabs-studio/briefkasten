@@ -28,6 +28,14 @@ Hexagonal, with the dependency arrow pointing inward at `domain/`.
   COPY + `\Seen`, deliberately not MOVE, because MOVE expunges the source. It
   also verifies the UID is present first: servers answer OK to COPY of a UID
   they do not hold, which would report a move that never happened.
+- **The destination is asked for, never assumed.** Curation folders resolve
+  through config override → RFC 6154 SPECIAL-USE → the personal namespace's
+  conventional path. A mailbox rooted at `INBOX.` keeps its trash at
+  `INBOX.Trash`, and such servers routinely declare `\Trash` while staying
+  silent about `\Archive` — so the two targets often resolve by different
+  routes on one server. The decision is a pure function
+  (`chooseCurationFolder`) precisely because the layouts that matter are the
+  ones an in-memory test server cannot reproduce.
 - **Reading never mutates.** IMAP fetches `BODY.PEEK[]`; the maildir backend
   reads files in place. This is what makes `scope=read`/`all` safe — looking at
   processed mail cannot disturb the unread backlog.

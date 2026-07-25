@@ -25,13 +25,24 @@ type literal struct {
 func (l literal) Size() int64 { return l.size }
 
 // startIMAPServer runs an in-memory IMAP server with one user and one
-// unseen message in INBOX. Returns the listen address.
-func startIMAPServer(t *testing.T) string {
+// unseen message in INBOX, plus any extra mailboxes named by the caller.
+// Returns the listen address.
+//
+// Note the memory server cannot declare SPECIAL-USE — its Create ignores
+// imap.CreateOptions.SpecialUse and the attribute list is unexported —
+// so folder discovery via \Trash/\Archive is covered by the unit tests
+// over chooseCurationFolder instead.
+func startIMAPServer(t *testing.T, extraMailboxes ...string) string {
 	t.Helper()
 
 	user := imapmemserver.NewUser("alice", "secret")
 	if err := user.Create("INBOX", nil); err != nil {
 		t.Fatal(err)
+	}
+	for _, name := range extraMailboxes {
+		if err := user.Create(name, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	raw := []byte(testMessage)
 	if _, err := user.Append("INBOX", literal{bytes.NewReader(raw), int64(len(raw))}, &imap.AppendOptions{}); err != nil {
