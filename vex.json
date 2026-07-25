@@ -3980,6 +3980,14 @@
       "_nox_fingerprint": "9534c0f277e042193b28e9b2895b9338202eec33cbab55e51dde6d9b811624d0",
       "justification": "vulnerable_code_not_present",
       "impact_statement": "Reviewed 2026-06-08: false positive \u2014 the literal/api-key secrets rule matched test code in the IMAP watcher test (memserver dummy credentials / a long Go test function name), not a real credential."
+    },
+    {
+      "vulnerability": "GO-2026-5932",
+      "status": "under_investigation",
+      "products": [
+        "go.klarlabs.de/briefkasten"
+      ],
+      "impact_statement": "Reviewed 2026-07-25: golang.org/x/crypto v0.53.0, an indirect dependency. govulncheck reports the vulnerable symbol is not called from this module, so there is no reachable exposure today. No fixed version is published yet, which is why this is under_investigation rather than not_affected: the status is a reminder to upgrade when a fix lands, not a dismissal. A baseline entry alone would go quiet forever and nobody would revisit it."
     }
   ]
 }
