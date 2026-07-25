@@ -41,14 +41,21 @@ email.delete — acts on a message whatever its read state, so an id from
 a scope=read or scope=all listing can be fetched, archived, or deleted
 just like an unread one. Curation is not limited to the backlog.
 
-email.mark_seen, email.archive, and email.delete take either id (one
-message) or ids (a batch of up to 100 you enumerated first) — exactly
-one of the two. There is no "everything matching" form: pass the ids you
-listed. A batch is answered per id — marked/archived/deleted lists what
-happened, failed names each id that did not and why — and nothing is
-rolled back, so read failed rather than assuming all-or-nothing. One
+email.fetch, email.mark_seen, email.archive, and email.delete take
+either id (one message) or ids (a batch of up to 100 you enumerated
+first) — exactly one of the two. There is no "everything matching" form:
+pass the ids you listed. A batch is answered per id —
+fetched/marked/archived/deleted lists what happened, failed names each
+id that did not and why — and nothing is rolled back, so read failed
+rather than assuming all-or-nothing. For the three mutating tools one
 confirmation covers the whole batch, and it states the count and the
 destination folder, so ask the user with those in hand.
+
+A batched email.fetch is bounded by size, not just by count: the
+messages are measured before any body is read, and a batch totalling
+more than 25 MiB is refused whole, naming the total and the id count.
+Nothing is ever truncated — a cut-off message would be corrupt mail you
+could not tell apart from real mail. Split the ids and fetch again.
 
 email.send, email.archive, and email.delete all require human
 confirmation: the host is asked via elicitation, or you must ask the
@@ -154,20 +161,38 @@ func registerTools(srv *mcp.Server, svc *application.Service) {
 		})
 
 	srv.Tool("email.fetch").
-		Description("Fetch the raw RFC 5322 message for an id, base64-encoded. Works for read and unread messages alike; fetching never marks a message seen.").
+		Description(fmt.Sprintf(
+			"Fetch raw RFC 5322 messages, base64-encoded. Pass id for one message (returns raw), or ids for a batch of up to %d — exactly one of the two. Works for read and unread messages alike; fetching never marks a message seen. A batch answers per id: fetched carries {id, raw} for each message read, failed names each id that could not be and why. A batch is measured before anything is read and refused whole if the messages total more than %d MiB — retry with fewer ids; nothing is ever truncated.",
+			domain.MaxBulkIDs, domain.MaxFetchBytes>>20)).
 		ReadOnly().
-		OutputSchema(map[string]any{"raw": "<base64>"}).
+		OutputSchema(map[string]any{
+			"fetched": []map[string]any{{"id": "a.eml", "raw": "<base64>"}},
+			"failed":  []map[string]any{{"id": "b.eml", "error": "briefkasten: invalid message id: b.eml"}},
+			"total":   2,
+		}).
 		Handler(func(ctx context.Context, in struct {
-			ID      string `json:"id" jsonschema:"required,description=Message id from email.list"`
-			Folder  string `json:"folder,omitempty" jsonschema:"description=Folder holding the message; defaults to the inbox"`
-			Account string `json:"account,omitempty" jsonschema:"description=Named account; defaults to the primary"`
+			ID      string   `json:"id,omitempty" jsonschema:"description=One message id from email.list or email.search. Pass either id or ids"`
+			IDs     []string `json:"ids,omitempty" jsonschema:"description=Message ids to fetch in one call (max 100); the batch is refused if the messages exceed 25 MiB in total. Pass either id or ids"`
+			Folder  string   `json:"folder,omitempty" jsonschema:"description=Folder holding the messages; defaults to the inbox"`
+			Account string   `json:"account,omitempty" jsonschema:"description=Named account; defaults to the primary"`
 		},
 		) (map[string]any, error) {
-			raw, err := svc.Read(ctx, in.Account, in.Folder, in.ID)
+			ids, bulk, err := batchIDs(in.ID, in.IDs)
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"raw": base64.StdEncoding.EncodeToString(raw)}, nil
+			if !bulk {
+				raw, err := svc.Read(ctx, in.Account, in.Folder, ids[0])
+				if err != nil {
+					return nil, err
+				}
+				return map[string]any{"raw": base64.StdEncoding.EncodeToString(raw)}, nil
+			}
+			res, err := svc.ReadMany(ctx, in.Account, in.Folder, ids)
+			if err != nil {
+				return nil, err
+			}
+			return fetchResponse(res), nil
 		})
 
 	srv.Tool("email.mark_seen").
@@ -447,6 +472,31 @@ func bulkResponse(verb string, res domain.BulkResult) map[string]any {
 		verb:     res.Succeeded,
 		"failed": failed,
 		"total":  len(res.Succeeded) + len(res.Failed),
+	}
+}
+
+// fetchResponse renders a batched fetch for the wire. Each message
+// carries its own id alongside its bytes — a positional list would make
+// a partly failed batch impossible to line up — and raw is base64, the
+// identical encoding the single-message form returns, so a client
+// decodes both the same way. The failures are always present, so a batch
+// that partly failed can never read as a plain success.
+func fetchResponse(res domain.FetchResult) map[string]any {
+	fetched := make([]map[string]any, 0, len(res.Fetched))
+	for _, m := range res.Fetched {
+		fetched = append(fetched, map[string]any{
+			"id":  m.ID,
+			"raw": base64.StdEncoding.EncodeToString(m.Raw),
+		})
+	}
+	failed := make([]map[string]any, 0, len(res.Failed))
+	for _, f := range res.Failed {
+		failed = append(failed, map[string]any{"id": f.ID, "error": f.Err.Error()})
+	}
+	return map[string]any{
+		"fetched": fetched,
+		"failed":  failed,
+		"total":   len(res.Fetched) + len(res.Failed),
 	}
 }
 

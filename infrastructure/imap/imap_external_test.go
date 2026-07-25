@@ -33,6 +33,11 @@ func (l literal) Size() int64 { return l.size }
 type commandCounter struct {
 	mu     sync.Mutex
 	counts map[string]int
+	// lines keeps the commands whole as well as tallied. Two UID FETCHes
+	// can differ entirely in what they cost — one asks for RFC822.SIZE,
+	// the other streams every body — and the name alone cannot tell them
+	// apart, which is exactly what a size pre-flight must be checked on.
+	lines []string
 }
 
 func newCommandCounter() *commandCounter { return &commandCounter{counts: map[string]int{}} }
@@ -49,6 +54,7 @@ func (c *commandCounter) observe(line string) {
 	}
 	c.mu.Lock()
 	c.counts[name]++
+	c.lines = append(c.lines, line)
 	c.mu.Unlock()
 }
 
@@ -58,11 +64,27 @@ func (c *commandCounter) count(name string) int {
 	return c.counts[name]
 }
 
+// matching counts the commands whose text contains needle, so a test can
+// ask what a command actually requested rather than only which verb it
+// used.
+func (c *commandCounter) matching(needle string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, line := range c.lines {
+		if strings.Contains(strings.ToUpper(line), strings.ToUpper(needle)) {
+			n++
+		}
+	}
+	return n
+}
+
 // reset zeroes the tally so a test can measure one operation rather than
 // everything the connection has done since it was dialled.
 func (c *commandCounter) reset() {
 	c.mu.Lock()
 	c.counts = map[string]int{}
+	c.lines = nil
 	c.mu.Unlock()
 }
 
@@ -161,6 +183,17 @@ func startCountedIMAPServer(t *testing.T, extraMailboxes ...string) (string, *co
 // cannot show whether a batch was batched.
 func startSeededIMAPServer(t *testing.T, messages int, extraMailboxes ...string) (string, *countingListener) {
 	t.Helper()
+	bodies := make([][]byte, messages)
+	for i := range bodies {
+		bodies[i] = []byte(testMessage)
+	}
+	return startMessagesIMAPServer(t, bodies, extraMailboxes...)
+}
+
+// startMessagesIMAPServer seeds the exact messages given, so a test can
+// control what the mailbox weighs as well as how much of it there is.
+func startMessagesIMAPServer(t *testing.T, bodies [][]byte, extraMailboxes ...string) (string, *countingListener) {
+	t.Helper()
 
 	user := imapmemserver.NewUser("alice", "secret")
 	if err := user.Create("INBOX", nil); err != nil {
@@ -171,8 +204,7 @@ func startSeededIMAPServer(t *testing.T, messages int, extraMailboxes ...string)
 			t.Fatal(err)
 		}
 	}
-	raw := []byte(testMessage)
-	for range messages {
+	for _, raw := range bodies {
 		if _, err := user.Append("INBOX", literal{bytes.NewReader(raw), int64(len(raw))}, &imap.AppendOptions{}); err != nil {
 			t.Fatal(err)
 		}

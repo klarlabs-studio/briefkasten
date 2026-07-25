@@ -139,9 +139,27 @@ type Curator interface {
 // what servers accept.
 const MaxBulkIDs = 100
 
+// MaxFetchBytes caps the raw bytes one batched fetch may return in total.
+//
+// The id cap alone does not bound a fetch. Curation moves references —
+// a hundred of them cost a hundred UIDs on the wire — but a fetch
+// returns whole messages, and a hundred messages carrying attachments is
+// comfortably hundreds of megabytes: enough to exhaust the MCP client's
+// context or its memory before it can decide it did not want them.
+//
+// 25 MiB is deliberately the same ceiling domain.MaxMessageBytes puts on
+// one outbound message, so the two directions agree on what briefkasten
+// considers a reasonable amount of mail to move in one call. A batch
+// measured over it is refused, never trimmed: see ErrFetchTooLarge.
+const MaxFetchBytes = 25 << 20 // 25 MiB
+
 // ErrBulkSize rejects a batch that is empty, over MaxBulkIDs, or repeats
 // an id.
 var ErrBulkSize = errors.New("briefkasten: invalid batch")
+
+// ErrFetchTooLarge refuses a batch whose messages would exceed
+// MaxFetchBytes in total.
+var ErrFetchTooLarge = errors.New("briefkasten: batch too large to fetch")
 
 // CheckBulkIDs validates a batch before any of it runs. It is deliberate
 // that the whole call is refused rather than trimmed: a caller that
@@ -165,6 +183,29 @@ func CheckBulkIDs(ids []string) error {
 			return fmt.Errorf("%w: id %q appears more than once", ErrBulkSize, id)
 		}
 		seen[id] = struct{}{}
+	}
+	return nil
+}
+
+// CheckFetchBudget refuses a batch measured over MaxFetchBytes.
+//
+// It is called with a total the backend measured before reading a single
+// body — an IMAP RFC822.SIZE fetch, a maildir stat — because the only
+// useful moment to refuse is before the bytes exist. Discovering the size
+// by reading it has already spent the memory the budget exists to
+// protect.
+//
+// The refusal is whole, and it is not a truncation. A truncated RFC 5322
+// message is not a smaller message: it is corrupt data that a MIME parser
+// will happily accept and misread, and handing that to a consumer is
+// worse than handing it an error. So the answer is the budget, what the
+// batch actually measures, and how many ids that covers — everything the
+// caller needs to split the batch and try again.
+func CheckFetchBudget(total int64, ids int) error {
+	if total > MaxFetchBytes {
+		return fmt.Errorf(
+			"%w: %d ids measure %d bytes, over the %d-byte (%d MiB) budget for one call — fetch fewer ids per call",
+			ErrFetchTooLarge, ids, total, MaxFetchBytes, MaxFetchBytes>>20)
 	}
 	return nil
 }
@@ -218,6 +259,84 @@ func (r *BulkResult) Succeed(id string) { r.Succeeded = append(r.Succeeded, id) 
 // Fail records an id the operation could not act on, and why.
 func (r *BulkResult) Fail(id string, err error) {
 	r.Failed = append(r.Failed, BulkFailure{ID: id, Err: err})
+}
+
+// BulkMessage is one message a batched fetch returned: the id it was
+// asked for, and the raw RFC 5322 bytes. Raw is []byte rather than a
+// string so encoding/json renders it base64 — the identical wire form
+// the single-message fetch produces, so a client can decode both the
+// same way.
+type BulkMessage struct {
+	ID  string `json:"id"`
+	Raw []byte `json:"raw"`
+}
+
+// FetchResult reports a batched fetch id by id.
+//
+// It is BulkResult's shape for an operation whose successes carry a
+// payload: the ids that were read come back with their bytes, the ids
+// that could not appear individually with a reason, and there is no
+// blanket ok. One id the backend does not hold is that id's own failure,
+// not a failed call — the caller keeps the mail it asked for and can see
+// precisely what is missing.
+type FetchResult struct {
+	Fetched []BulkMessage `json:"fetched"`
+	Failed  []BulkFailure `json:"failed"`
+}
+
+// NewFetchResult prepares a result sized for a batch. Both lists start
+// non-nil so an empty one renders as [] rather than null.
+func NewFetchResult(size int) FetchResult {
+	return FetchResult{Fetched: make([]BulkMessage, 0, size), Failed: make([]BulkFailure, 0)}
+}
+
+// Add records a message the fetch read.
+func (r *FetchResult) Add(id string, raw []byte) {
+	r.Fetched = append(r.Fetched, BulkMessage{ID: id, Raw: raw})
+}
+
+// Fail records an id the fetch could not read, and why.
+func (r *FetchResult) Fail(id string, err error) {
+	r.Failed = append(r.Failed, BulkFailure{ID: id, Err: err})
+}
+
+// MessageSizer is an optional Mailbox capability: reporting how large
+// messages are without reading them. It exists so a batched fetch can be
+// refused before it allocates anything — the pre-flight CheckFetchBudget
+// is fed from.
+//
+// Both built-in backends answer cheaply: IMAP fetches RFC822.SIZE for the
+// whole set in one round trip, and maildir stats the files. A backend
+// that cannot answer cannot have its fetches bounded, so it is told to
+// fetch one id at a time rather than quietly allowed an unbounded batch.
+//
+// Like Mailbox, it honours its context. Sizing never changes a message's
+// state — it is as read-only as Fetch, and does not set \Seen.
+type MessageSizer interface {
+	// Sizes reports the raw byte size of each id the backend holds. Ids
+	// it does not hold are simply absent from the map rather than an
+	// error: a stale id is that id's own failure once the fetch runs, and
+	// answering the measurable part is what lets the rest proceed.
+	Sizes(ctx context.Context, ids []string) (map[string]int64, error)
+}
+
+// BulkFetcher is an optional Mailbox capability: reading many messages in
+// one call. Backends that gain nothing from batching do not implement it
+// and are looped over instead, after the same size pre-flight.
+//
+// Implementations must measure before they read. The whole point of the
+// capability is that a batch of fifty is one round trip rather than
+// fifty; the whole point of the pre-flight is that a batch of fifty large
+// messages is refused rather than delivered.
+//
+// Like Mailbox, it honours its context, and fetching never marks anything
+// seen.
+type BulkFetcher interface {
+	// FetchMany returns the raw bytes for each id and reports the outcome
+	// per id. The error is reserved for a failure of the batch as a whole
+	// — an invalid batch, one measured over MaxFetchBytes, or a backend
+	// that could not be reached at all.
+	FetchMany(ctx context.Context, ids []string) (FetchResult, error)
 }
 
 // BulkMailbox is an optional Mailbox capability: acknowledging many

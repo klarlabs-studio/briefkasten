@@ -96,17 +96,28 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		emit(strings.Join(ids, "\n"), map[string]any{"ids": ids})
 
 	case "read":
-		id := fs.Arg(0)
-		if id == "" {
-			fmt.Fprintln(stderr, "usage: briefkasten read <id>")
+		ids := fs.Args()
+		if len(ids) == 0 {
+			fmt.Fprintln(stderr, "usage: briefkasten read <id> [id ...]")
 			return 2
 		}
-		raw, err := svc.Read(ctx, *account, *folder, id)
+		if len(ids) == 1 && !*asJSON {
+			// The single-id form is what pipelines already parse: the
+			// message, and nothing around it.
+			raw, err := svc.Read(ctx, *account, *folder, ids[0])
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			fmt.Fprintln(stdout, string(raw))
+			break
+		}
+		res, err := svc.ReadMany(ctx, *account, *folder, ids)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		fmt.Fprintln(stdout, string(raw))
+		return reportFetch(stdout, stderr, *asJSON, res)
 
 	case "seen":
 		ids := fs.Args()
@@ -355,14 +366,23 @@ read, seen, archive, and delete take an id from any scope: a message that
 was processed long ago acts exactly like one still in the backlog. seen
 is idempotent — re-acknowledging read mail is not an error.
 
-seen, archive, and delete take several ids at once (max %d), and report
-per id: what moved is listed, what did not is named with its reason, and
-nothing is rolled back. A batch that partly failed exits non-zero.
+read, seen, archive, and delete take several ids at once (max %d), and
+report per id: what succeeded is listed, what did not is named with its
+reason on stderr, and nothing is rolled back. A batch that partly failed
+exits non-zero.
+
+read with one id prints the message and nothing else, as it always has.
+With several it length-prefixes each one — a header line "id <id>
+<bytes>", then exactly that many raw bytes, then a newline — because no
+marker line can safely delimit mail that may contain any byte sequence.
+--json gives the structured form instead, with raw base64-encoded. A
+batch of messages totalling over %d MiB is refused before anything is
+read, rather than truncated.
 
 Curation is soft: archive files away, delete moves to trash — nothing is
 ever expunged. Both prompt once for confirmation unless --yes; for a
 batch the prompt names the count and the destination folder.
-`, cmd, briefkasten.MaxBulkIDs)
+`, cmd, briefkasten.MaxBulkIDs, briefkasten.MaxFetchBytes>>20)
 		return 2
 	}
 	return 0
@@ -482,6 +502,46 @@ func reportBulk(stdout, stderr io.Writer, asJSON bool, verb string, res briefkas
 	} else {
 		for _, id := range res.Succeeded {
 			fmt.Fprintf(stdout, "%s: %s\n", verb, id)
+		}
+		for _, f := range res.Failed {
+			fmt.Fprintf(stderr, "failed: %s (%v)\n", f.ID, f.Err)
+		}
+	}
+	if len(res.Failed) > 0 {
+		return 1
+	}
+	return 0
+}
+
+// reportFetch prints a batch of raw messages and sets the exit status
+// from the per-id outcome, exactly as reportBulk does.
+//
+// The plain-text form is length-prefixed, because raw RFC 5322 messages
+// cannot be separated by a marker line: any delimiter that could appear
+// in a header or a MIME body — and every printable one can — would need
+// escaping, and escaping mail is how a consumer ends up parsing
+// something that is no longer the message. So each message is announced
+// by a header line
+//
+//	id <id> <bytes>
+//
+// followed by exactly that many bytes and a newline. A reader takes the
+// header, reads the count, and consumes the message byte for byte with
+// nothing to unescape. --json gives the same information as one object,
+// with raw base64-encoded.
+func reportFetch(stdout, stderr io.Writer, asJSON bool, res briefkasten.FetchResult) int {
+	if asJSON {
+		raw, _ := json.MarshalIndent(map[string]any{
+			"fetched": res.Fetched,
+			"failed":  res.Failed,
+			"total":   len(res.Fetched) + len(res.Failed),
+		}, "", "  ")
+		fmt.Fprintln(stdout, string(raw))
+	} else {
+		for _, msg := range res.Fetched {
+			fmt.Fprintf(stdout, "id %s %d\n", msg.ID, len(msg.Raw))
+			_, _ = stdout.Write(msg.Raw)
+			fmt.Fprintln(stdout)
 		}
 		for _, f := range res.Failed {
 			fmt.Fprintf(stderr, "failed: %s (%v)\n", f.ID, f.Err)

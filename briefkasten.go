@@ -38,8 +38,12 @@ type (
 	Curator         = domain.Curator
 	BulkMailbox     = domain.BulkMailbox
 	BulkCurator     = domain.BulkCurator
+	BulkFetcher     = domain.BulkFetcher
+	MessageSizer    = domain.MessageSizer
 	BulkResult      = domain.BulkResult
 	BulkFailure     = domain.BulkFailure
+	BulkMessage     = domain.BulkMessage
+	FetchResult     = domain.FetchResult
 	Sender          = domain.Sender
 	OutboundMessage = domain.OutboundMessage
 	Attachment      = domain.Attachment
@@ -63,8 +67,14 @@ var ErrBadScope = domain.ErrBadScope
 // ErrBulkSize rejects a batch that is empty, over the cap, or repeats an id.
 var ErrBulkSize = domain.ErrBulkSize
 
+// ErrFetchTooLarge refuses a batch measured over the fetch budget.
+var ErrFetchTooLarge = domain.ErrFetchTooLarge
+
 // MaxBulkIDs caps how many messages one bulk call may act on.
 const MaxBulkIDs = domain.MaxBulkIDs
+
+// MaxFetchBytes caps the raw bytes one batched fetch may return in total.
+const MaxFetchBytes = domain.MaxFetchBytes
 
 // Application types.
 type (
