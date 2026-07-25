@@ -111,8 +111,8 @@ func registerTools(srv *mcp.Server, svc *application.Service) {
 		Limit   int    `json:"limit,omitempty" jsonschema:"description=Cap the ids returned; total always reports the full count"`
 	}
 
-	list := func(in listInput) (map[string]any, error) {
-		ids, err := svc.List(in.Account, in.Folder, domain.Scope(in.Scope))
+	list := func(ctx context.Context, in listInput) (map[string]any, error) {
+		ids, err := svc.List(ctx, in.Account, in.Folder, domain.Scope(in.Scope))
 		if err != nil {
 			return nil, err
 		}
@@ -128,33 +128,33 @@ func registerTools(srv *mcp.Server, svc *application.Service) {
 		ReadOnly().
 		UIResource(InboxUIResourceURI).
 		OutputSchema(map[string]any{"ids": []string{"m1.eml"}, "total": 1, "scope": "unread"}).
-		Handler(func(_ context.Context, in listInput) (map[string]any, error) { return list(in) })
+		Handler(func(ctx context.Context, in listInput) (map[string]any, error) { return list(ctx, in) })
 
 	srv.Tool("email.list_unread").
 		Description("List ids of unread messages — email.list with scope=unread. Prefer email.list, which can also reach read mail.").
 		ReadOnly().
 		UIResource(InboxUIResourceURI).
 		OutputSchema(map[string]any{"ids": []string{"m1.eml"}, "total": 1, "scope": "unread"}).
-		Handler(func(_ context.Context, in struct {
+		Handler(func(ctx context.Context, in struct {
 			Folder  string `json:"folder,omitempty" jsonschema:"description=Folder to list; defaults to the inbox (see email://folders)"`
 			Account string `json:"account,omitempty" jsonschema:"description=Named account; defaults to the primary (see email://accounts)"`
 			Limit   int    `json:"limit,omitempty" jsonschema:"description=Cap the ids returned; total always reports the full count"`
 		},
 		) (map[string]any, error) {
-			return list(listInput{Folder: in.Folder, Account: in.Account, Limit: in.Limit})
+			return list(ctx, listInput{Folder: in.Folder, Account: in.Account, Limit: in.Limit})
 		})
 
 	srv.Tool("email.fetch").
 		Description("Fetch the raw RFC 5322 message for an id, base64-encoded. Works for read and unread messages alike; fetching never marks a message seen.").
 		ReadOnly().
 		OutputSchema(map[string]any{"raw": "<base64>"}).
-		Handler(func(_ context.Context, in struct {
+		Handler(func(ctx context.Context, in struct {
 			ID      string `json:"id" jsonschema:"required,description=Message id from email.list"`
 			Folder  string `json:"folder,omitempty" jsonschema:"description=Folder holding the message; defaults to the inbox"`
 			Account string `json:"account,omitempty" jsonschema:"description=Named account; defaults to the primary"`
 		},
 		) (map[string]any, error) {
-			raw, err := svc.Read(in.Account, in.Folder, in.ID)
+			raw, err := svc.Read(ctx, in.Account, in.Folder, in.ID)
 			if err != nil {
 				return nil, err
 			}
@@ -165,13 +165,13 @@ func registerTools(srv *mcp.Server, svc *application.Service) {
 		Description("Mark a message as seen so it is not ingested again. Idempotent: acknowledging a message that is already read succeeds and changes nothing.").
 		Idempotent().
 		OutputSchema(map[string]any{"ok": true}).
-		Handler(func(_ context.Context, in struct {
+		Handler(func(ctx context.Context, in struct {
 			ID      string `json:"id" jsonschema:"required,description=Message id to acknowledge; only mark after processing succeeded"`
 			Folder  string `json:"folder,omitempty" jsonschema:"description=Folder holding the message; defaults to the inbox"`
 			Account string `json:"account,omitempty" jsonschema:"description=Named account; defaults to the primary"`
 		},
 		) (map[string]any, error) {
-			if err := svc.MarkSeen(in.Account, in.Folder, in.ID); err != nil {
+			if err := svc.MarkSeen(ctx, in.Account, in.Folder, in.ID); err != nil {
 				return nil, err
 			}
 			return map[string]any{"ok": true}, nil
@@ -181,7 +181,7 @@ func registerTools(srv *mcp.Server, svc *application.Service) {
 		Description("Search messages for a text query (case-insensitive). Returns matching ids. scope selects unread (default), read, or all mail — use read/all to search messages already processed. Optional: folder, account, limit (cap the ids returned; total always reports the full count).").
 		ReadOnly().
 		OutputSchema(map[string]any{"ids": []string{"m1.eml"}, "total": 1, "scope": "unread"}).
-		Handler(func(_ context.Context, in struct {
+		Handler(func(ctx context.Context, in struct {
 			Query   string `json:"query" jsonschema:"required,description=Text to find in messages (case-insensitive)"`
 			Scope   string `json:"scope,omitempty" jsonschema:"description=Which messages to search: unread (default), read, or all,enum=unread,enum=read,enum=all"`
 			Folder  string `json:"folder,omitempty" jsonschema:"description=Folder to search; defaults to the inbox"`
@@ -189,7 +189,7 @@ func registerTools(srv *mcp.Server, svc *application.Service) {
 			Limit   int    `json:"limit,omitempty" jsonschema:"description=Cap the ids returned; total always reports the full count"`
 		},
 		) (map[string]any, error) {
-			ids, err := svc.SearchScope(in.Account, in.Folder, in.Query, domain.Scope(in.Scope))
+			ids, err := svc.SearchScope(ctx, in.Account, in.Folder, in.Query, domain.Scope(in.Scope))
 			if err != nil {
 				return nil, err
 			}
@@ -228,11 +228,13 @@ func confirmCuration(ctx context.Context, confirmed bool, action, id, destinatio
 // confirmation prompt. Best-effort and skipped when the caller already
 // confirmed: it costs a server round trip, and a backend that cannot
 // answer must not block the operation.
-func curationDestination(svc *application.Service, confirmed bool, account, folder, action string) string {
+func curationDestination(
+	ctx context.Context, svc *application.Service, confirmed bool, account, folder, action string,
+) string {
 	if confirmed {
 		return ""
 	}
-	plan, err := svc.CurationPlan(account, folder)
+	plan, err := svc.CurationPlan(ctx, account, folder)
 	if err != nil {
 		return ""
 	}
@@ -294,11 +296,11 @@ func registerCurateTools(srv *mcp.Server, svc *application.Service) {
 		Destructive().
 		OutputSchema(map[string]any{"ok": true}).
 		Handler(func(ctx context.Context, in curateInput) (map[string]any, error) {
-			dest := curationDestination(svc, in.Confirm, in.Account, in.Folder, "archive")
+			dest := curationDestination(ctx, svc, in.Confirm, in.Account, in.Folder, "archive")
 			if err := confirmCuration(ctx, in.Confirm, "archive", in.ID, dest); err != nil {
 				return nil, err
 			}
-			if err := svc.Archive(in.Account, in.Folder, in.ID); err != nil {
+			if err := svc.Archive(ctx, in.Account, in.Folder, in.ID); err != nil {
 				return nil, err
 			}
 			return map[string]any{"ok": true}, nil
@@ -309,11 +311,11 @@ func registerCurateTools(srv *mcp.Server, svc *application.Service) {
 		Destructive().
 		OutputSchema(map[string]any{"ok": true}).
 		Handler(func(ctx context.Context, in curateInput) (map[string]any, error) {
-			dest := curationDestination(svc, in.Confirm, in.Account, in.Folder, "delete")
+			dest := curationDestination(ctx, svc, in.Confirm, in.Account, in.Folder, "delete")
 			if err := confirmCuration(ctx, in.Confirm, "delete", in.ID, dest); err != nil {
 				return nil, err
 			}
-			if err := svc.Delete(in.Account, in.Folder, in.ID); err != nil {
+			if err := svc.Delete(ctx, in.Account, in.Folder, in.ID); err != nil {
 				return nil, err
 			}
 			return map[string]any{"ok": true}, nil

@@ -5,21 +5,36 @@
 package domain
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
 
 // Mailbox is the core port: anything that can list unread messages,
 // fetch raw RFC 5322 bytes, and mark a message as seen.
+//
+// Every method takes a context and must honour it. The contract is the
+// one the caller needs to bound a request: when ctx is cancelled or its
+// deadline passes, the call abandons whatever it is waiting on and
+// returns promptly with an error satisfying errors.Is(err,
+// context.Canceled) or errors.Is(err, context.DeadlineExceeded) — never
+// a backend error dressed up as a fault. That is what distinguishes "we
+// stopped waiting" from "the backend is broken", and the resilience
+// decorator, the retry policy, and the circuit breaker all read the
+// difference.
+//
+// Abandoning a call says nothing about whether the backend completed it.
+// MarkSeen in particular is idempotent precisely so a cancelled call can
+// be repeated safely.
 type Mailbox interface {
 	// ListUnread returns the ids of messages not yet marked seen.
-	ListUnread() ([]string, error)
+	ListUnread(ctx context.Context) ([]string, error)
 	// Fetch returns the raw message bytes for an id, read or unread.
-	Fetch(id string) ([]byte, error)
+	Fetch(ctx context.Context, id string) ([]byte, error)
 	// MarkSeen marks a message as processed so it is not listed again.
 	// It is idempotent: acknowledging a message that is already read
 	// succeeds and changes nothing.
-	MarkSeen(id string) error
+	MarkSeen(ctx context.Context, id string) error
 }
 
 // Scope selects which slice of a mailbox a listing or search covers.
@@ -55,35 +70,41 @@ func ParseScope(name string) (Scope, error) {
 // unread backlog. Backends that cannot distinguish read from unread mail
 // simply do not implement it, and scoped requests fail loudly rather
 // than silently returning the unread set.
+//
+// Like Mailbox, every method honours its context.
 type ScopedMailbox interface {
 	// List returns the ids covered by scope.
-	List(scope Scope) ([]string, error)
+	List(ctx context.Context, scope Scope) ([]string, error)
 }
 
 // Searcher is an optional Mailbox capability: full-text search over the
-// unread backlog.
+// unread backlog. Like Mailbox, it honours its context.
 type Searcher interface {
 	// Search returns the unread ids whose raw content matches the query
 	// (case-insensitive).
-	Search(query string) ([]string, error)
+	Search(ctx context.Context, query string) ([]string, error)
 }
 
 // ScopedSearcher is an optional Searcher capability: search restricted
-// to a scope rather than always to the unread backlog.
+// to a scope rather than always to the unread backlog. Like Mailbox, it
+// honours its context.
 type ScopedSearcher interface {
 	// SearchScope returns the ids within scope whose raw content matches
 	// the query (case-insensitive).
-	SearchScope(scope Scope, query string) ([]string, error)
+	SearchScope(ctx context.Context, scope Scope, query string) ([]string, error)
 }
 
 // FolderMailbox is an optional Mailbox capability: backends with multiple
-// folders list them and hand out folder-scoped instances.
+// folders list them and hand out folder-scoped instances. Like Mailbox,
+// it honours its context.
 type FolderMailbox interface {
 	// Folders returns the available folder names; the default folder is
 	// included (as "INBOX" for the dir backend).
-	Folders() ([]string, error)
-	// InFolder returns a Mailbox scoped to the named folder.
-	InFolder(name string) (Mailbox, error)
+	Folders(ctx context.Context) ([]string, error)
+	// InFolder returns a Mailbox scoped to the named folder. The context
+	// bounds only the resolution itself; the returned Mailbox takes a
+	// fresh context per call and does not inherit this one.
+	InFolder(ctx context.Context, name string) (Mailbox, error)
 }
 
 // Curator is an optional Mailbox capability: human curation of the
@@ -96,11 +117,15 @@ type FolderMailbox interface {
 // exactly what a human reaches for these operations to do, so a backend
 // that resolves ids only within the unread set does not satisfy this
 // port.
+//
+// Like Mailbox, every method honours its context. Because curation is a
+// soft move, an abandoned call is safe to repeat: the worst outcome of
+// giving up on one is not knowing yet whether the move landed.
 type Curator interface {
 	// Archive moves a message — read or unread — to the archive.
-	Archive(id string) error
+	Archive(ctx context.Context, id string) error
 	// Delete moves a message — read or unread — to the trash.
-	Delete(id string) error
+	Delete(ctx context.Context, id string) error
 }
 
 // CurationRoute names how a curation destination was decided. It exists
@@ -143,9 +168,10 @@ type CurationPlan struct {
 
 // CurationInspector is an optional Curator capability: reporting where
 // curation would file, before it files anything. Resolution can consult
-// the server, so this is a query, not a pure accessor.
+// the server, so this is a query, not a pure accessor — and, like every
+// other query here, it honours its context.
 type CurationInspector interface {
-	CurationPlan() (CurationPlan, error)
+	CurationPlan(ctx context.Context) (CurationPlan, error)
 }
 
 // ErrBadID rejects message ids that try to escape the mailbox.

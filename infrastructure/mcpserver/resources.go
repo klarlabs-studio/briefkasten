@@ -22,8 +22,8 @@ func registerResources(srv *mcp.Server, svc *application.Service, ob *applicatio
 		Name("Inbox").
 		Description("Unread message ids in the mailbox.").
 		MimeType("application/json").
-		Handler(func(_ context.Context, uri string, _ map[string]string) (*server.ResourceContent, error) {
-			ids, err := svc.ListUnread("", "")
+		Handler(func(ctx context.Context, uri string, _ map[string]string) (*server.ResourceContent, error) {
+			ids, err := svc.ListUnread(ctx, "", "")
 			if err != nil {
 				return nil, err
 			}
@@ -34,8 +34,8 @@ func registerResources(srv *mcp.Server, svc *application.Service, ob *applicatio
 		Name("Inbox message").
 		Description("Raw RFC 5322 message by id — read or unread; reading never marks a message seen.").
 		MimeType("message/rfc822").
-		Handler(func(_ context.Context, uri string, params map[string]string) (*server.ResourceContent, error) {
-			raw, err := svc.Read("", "", params["id"])
+		Handler(func(ctx context.Context, uri string, params map[string]string) (*server.ResourceContent, error) {
+			raw, err := svc.Read(ctx, "", "", params["id"])
 			if err != nil {
 				return nil, err
 			}
@@ -46,8 +46,8 @@ func registerResources(srv *mcp.Server, svc *application.Service, ob *applicatio
 		Name("Inbox message headers").
 		Description("Parsed headers (from, to, subject, date, message_id) by id, read or unread — triage without fetching the full message.").
 		MimeType("application/json").
-		Handler(func(_ context.Context, uri string, params map[string]string) (*server.ResourceContent, error) {
-			raw, err := svc.Read("", "", params["id"])
+		Handler(func(ctx context.Context, uri string, params map[string]string) (*server.ResourceContent, error) {
+			raw, err := svc.Read(ctx, "", "", params["id"])
 			if err != nil {
 				return nil, err
 			}
@@ -55,16 +55,16 @@ func registerResources(srv *mcp.Server, svc *application.Service, ob *applicatio
 		})
 
 	srv.ResourceCompletion("email://inbox/{id}").
-		Handler(func(_ context.Context, _ server.CompletionRef, arg server.CompletionArgument) (*server.CompletionResult, error) {
-			return completeMessageIDs(svc, arg.Value)
+		Handler(func(ctx context.Context, _ server.CompletionRef, arg server.CompletionArgument) (*server.CompletionResult, error) {
+			return completeMessageIDs(ctx, svc, arg.Value)
 		})
 
 	srv.Resource("email://folders").
 		Name("Folders").
 		Description("Available mailbox folders, plus where email.archive and email.delete would file (and how each destination was decided).").
 		MimeType("application/json").
-		Handler(func(_ context.Context, uri string, _ map[string]string) (*server.ResourceContent, error) {
-			folders, err := svc.Folders("")
+		Handler(func(ctx context.Context, uri string, _ map[string]string) (*server.ResourceContent, error) {
+			folders, err := svc.Folders(ctx, "")
 			if err != nil {
 				return nil, err
 			}
@@ -73,7 +73,7 @@ func registerResources(srv *mcp.Server, svc *application.Service, ob *applicatio
 			// would this go?" is available before asking a human to
 			// approve a move. Best-effort: a backend that cannot report
 			// them must not break folder listing.
-			if plan, err := svc.CurationPlan("", ""); err == nil {
+			if plan, err := svc.CurationPlan(ctx, "", ""); err == nil {
 				payload["curation"] = plan
 			}
 			return jsonResource(uri, payload)
@@ -126,10 +126,10 @@ func registerResources(srv *mcp.Server, svc *application.Service, ob *applicatio
 // here in a way it never is for email.list: these are typing hints, not
 // an answer about what is unread, so the fallback offers fewer
 // suggestions rather than passing read mail off as unread.
-func completeMessageIDs(svc *application.Service, prefix string) (*server.CompletionResult, error) {
-	ids, err := svc.List("", "", domain.ScopeAll)
+func completeMessageIDs(ctx context.Context, svc *application.Service, prefix string) (*server.CompletionResult, error) {
+	ids, err := svc.List(ctx, "", "", domain.ScopeAll)
 	if err != nil {
-		if ids, err = svc.ListUnread("", ""); err != nil {
+		if ids, err = svc.ListUnread(ctx, "", ""); err != nil {
 			return nil, err
 		}
 	}

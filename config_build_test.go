@@ -217,7 +217,7 @@ func TestRootFacadeConstructors(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := briefkasten.NewService(mb, nil)
-	ids, err := svc.ListUnread("", "")
+	ids, err := svc.ListUnread(t.Context(), "", "")
 	if err != nil || len(ids) != 0 {
 		t.Errorf("fresh service ListUnread = %v, %v", ids, err)
 	}

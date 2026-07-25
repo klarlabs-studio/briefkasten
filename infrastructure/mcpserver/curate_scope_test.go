@@ -120,7 +120,7 @@ func TestIDCompletionsCoverReadMail(t *testing.T) {
 	mb, root := newDir(t)
 	drop(t, root, "alpha.eml", "From: a@b.c\r\nSubject: Alpha\r\n\r\nalpha")
 	drop(t, root, "beta.eml", "From: a@b.c\r\nSubject: Beta\r\n\r\nbeta")
-	if err := mb.MarkSeen("alpha.eml"); err != nil {
+	if err := mb.MarkSeen(t.Context(), "alpha.eml"); err != nil {
 		t.Fatalf("MarkSeen: %v", err)
 	}
 	srv := New(application.NewService(mb, nil))

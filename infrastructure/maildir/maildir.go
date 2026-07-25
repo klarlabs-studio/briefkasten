@@ -4,6 +4,7 @@ package maildir
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -18,6 +19,15 @@ import (
 // new/ holds unread .eml files and cur/ holds seen ones. Dropping a file
 // into new/ is "receiving mail" — ideal for development, testing, and
 // pipelines that already export messages to disk.
+//
+// The context contract is honoured by checking it once at the entry to
+// each operation. Everything below is local file I/O, which the kernel
+// completes or fails in microseconds and which no context can interrupt
+// anyway; running it on another goroutine to be able to walk away from
+// it would buy cancellation of something that was never going to hang,
+// at the cost of a rename racing a returned error. The check at the door
+// is the whole of it: a caller whose deadline has already passed is not
+// made to wait for work nobody is waiting for.
 type Mailbox struct {
 	root string
 }
@@ -33,11 +43,16 @@ func New(root string) (*Mailbox, error) {
 }
 
 // ListUnread returns message ids (filenames) in new/, in stable order.
-func (m *Mailbox) ListUnread() ([]string, error) { return m.List(domain.ScopeUnread) }
+func (m *Mailbox) ListUnread(ctx context.Context) ([]string, error) {
+	return m.List(ctx, domain.ScopeUnread)
+}
 
 // List returns message ids for the scope, in stable order: new/ for
 // unread, cur/ for read, and the union of both for all.
-func (m *Mailbox) List(scope domain.Scope) ([]string, error) {
+func (m *Mailbox) List(ctx context.Context, scope domain.Scope) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("briefkasten: list: %w", err)
+	}
 	var subs []string
 	switch scope {
 	case domain.ScopeUnread:
@@ -79,8 +94,10 @@ var _ domain.ScopedMailbox = (*Mailbox)(nil)
 // Fetch returns the raw message bytes for an id, unread (new/) or
 // already read (cur/). Reading never moves the message, so fetching a
 // seen message leaves it seen and an unread one unread.
-func (m *Mailbox) Fetch(id string) ([]byte, error) {
-	var firstErr error
+func (m *Mailbox) Fetch(ctx context.Context, id string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("briefkasten: fetch %q: %w", id, err)
+	}
 	for _, sub := range []string{"new", "cur"} {
 		path, err := m.safePath(sub, id)
 		if err != nil {
@@ -90,18 +107,29 @@ func (m *Mailbox) Fetch(id string) ([]byte, error) {
 		if err == nil {
 			return data, nil
 		}
-		if firstErr == nil {
-			firstErr = err
+		// A missing file only rules out this directory. Anything else —
+		// an unreadable mailbox, a failing disk — is the backend in
+		// trouble and must surface as itself; swallowing it here would
+		// report a real fault as a caller mistake and hide it from the
+		// retry and circuit-breaker path.
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("briefkasten: fetch %q: %w", id, err)
 		}
 	}
-	return nil, fmt.Errorf("briefkasten: fetch %q: %w", id, firstErr)
+	// In neither new/ nor cur/: the caller named a message that is not
+	// here, which resilience must never retry nor hold against the
+	// backend's health.
+	return nil, fmt.Errorf("%w: %q", domain.ErrBadID, id)
 }
 
 // MarkSeen moves a message from new/ to cur/. Acknowledging a message
 // that is already read succeeds without doing anything — the tool is
 // idempotent, and an agent re-acknowledging its work is not an error.
 // An id in neither directory is a bad id, not a backend fault.
-func (m *Mailbox) MarkSeen(id string) error {
+func (m *Mailbox) MarkSeen(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("briefkasten: mark seen %q: %w", id, err)
+	}
 	from, err := m.safePath("new", id)
 	if err != nil {
 		return err
@@ -151,22 +179,28 @@ func (m *Mailbox) safePath(sub, id string) (string, error) {
 }
 
 // Search scans the unread backlog for a case-insensitive substring match.
-func (d *Mailbox) Search(query string) ([]string, error) {
-	return d.SearchScope(domain.ScopeUnread, query)
+func (d *Mailbox) Search(ctx context.Context, query string) ([]string, error) {
+	return d.SearchScope(ctx, domain.ScopeUnread, query)
 }
 
 // SearchScope scans the scope's messages for a case-insensitive
 // substring match.
-func (d *Mailbox) SearchScope(scope domain.Scope, query string) ([]string, error) {
-	ids, err := d.List(scope)
+func (d *Mailbox) SearchScope(ctx context.Context, scope domain.Scope, query string) ([]string, error) {
+	ids, err := d.List(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
 	needle := []byte(strings.ToLower(query))
 	var out []string
 	for _, id := range ids {
-		raw, err := d.Fetch(id)
+		// A scan over a large backlog is the one place this backend can
+		// run long, so the deadline is re-checked per message rather than
+		// only at the door.
+		raw, err := d.Fetch(ctx, id)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, err
+			}
 			continue
 		}
 		if bytes.Contains(bytes.ToLower(raw), needle) {
@@ -181,20 +215,88 @@ var (
 	_ domain.ScopedSearcher = (*Mailbox)(nil)
 )
 
-// Folders lists the root maildir ("INBOX") plus every subdirectory that
-// looks like a maildir (contains new/).
-func (d *Mailbox) Folders() ([]string, error) {
+const (
+	archiveFolder = "Archive"
+	trashFolder   = "Trash"
+	archiveDir    = ".archive"
+	trashDir      = ".trash"
+)
+
+// curatedFolders maps the folder name briefkasten exposes to the maildir
+// curation actually files into. The exposed names are the conventional
+// IMAP leaf names the IMAP backend already uses ("Archive", "Trash"), so
+// the same mail answers to the same folder name whichever backend an
+// account runs on and a script written against one keeps working against
+// the other. Those two names are therefore reserved on this backend. On
+// disk the directories stay dot-prefixed: hidden from `ls`, and reachable
+// only through this table — never through the generic scan in Folders or
+// the free-form path in InFolder.
+var curatedFolders = map[string]string{
+	archiveFolder: archiveDir,
+	trashFolder:   trashDir,
+}
+
+// curatedDir resolves an exposed folder name to its on-disk maildir. The
+// on-disk names are accepted as well because CurationPlan reports those,
+// and a caller that has just been told where mail would land must be able
+// to act on that answer.
+func curatedDir(name string) (string, bool) {
+	if dir, ok := curatedFolders[name]; ok {
+		return dir, true
+	}
+	for _, dir := range curatedFolders {
+		if name == dir {
+			return dir, true
+		}
+	}
+	return "", false
+}
+
+// curatedName is curatedDir's inverse: the exposed name for an on-disk
+// maildir, if that directory is one briefkasten curates into.
+func curatedName(dir string) (string, bool) {
+	for name, d := range curatedFolders {
+		if d == dir {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// Folders lists the root maildir ("INBOX"), the curated maildirs under
+// their exposed names, plus every subdirectory that looks like a maildir
+// (contains new/).
+func (d *Mailbox) Folders(ctx context.Context) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("briefkasten: folders: %w", err)
+	}
 	folders := []string{"INBOX"}
 	entries, err := os.ReadDir(d.root)
 	if err != nil {
 		return nil, fmt.Errorf("briefkasten: folders: %w", err)
 	}
 	for _, e := range entries {
-		if !e.IsDir() || e.Name() == "new" || e.Name() == "cur" || strings.HasPrefix(e.Name(), ".") {
+		if !e.IsDir() || e.Name() == "new" || e.Name() == "cur" {
+			continue
+		}
+		name := e.Name()
+		if strings.HasPrefix(name, ".") {
+			// Only the maildirs briefkasten curates into are mail; other
+			// dot-directories (sync state, editor droppings) are not, and
+			// stay invisible.
+			curated, ok := curatedName(name)
+			if !ok {
+				continue
+			}
+			name = curated
+		} else if _, reserved := curatedFolders[name]; reserved {
+			// A plain directory under a reserved name would list twice
+			// and shadow the curated one; the reserved name always means
+			// the curated maildir.
 			continue
 		}
 		if st, err := os.Stat(filepath.Join(d.root, e.Name(), "new")); err == nil && st.IsDir() {
-			folders = append(folders, e.Name())
+			folders = append(folders, name)
 		}
 	}
 	sort.Strings(folders[1:])
@@ -202,10 +304,19 @@ func (d *Mailbox) Folders() ([]string, error) {
 }
 
 // InFolder returns a Mailbox over the named sub-maildir; "INBOX" is the
-// root. Folder names cannot escape the root.
-func (d *Mailbox) InFolder(name string) (domain.Mailbox, error) {
+// root and the curated names reach archived and trashed mail. Folder
+// names cannot escape the root.
+func (d *Mailbox) InFolder(ctx context.Context, name string) (domain.Mailbox, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("briefkasten: folder %q: %w", name, err)
+	}
 	if name == "INBOX" {
 		return d, nil
+	}
+	// Curated names resolve through the table, so the path component is
+	// a constant from this file rather than anything the caller supplied.
+	if dir, ok := curatedDir(name); ok {
+		return New(filepath.Join(d.root, dir))
 	}
 	if name == "" || name != filepath.Base(name) || strings.HasPrefix(name, ".") {
 		return nil, fmt.Errorf("briefkasten: invalid folder %q", name)
@@ -217,7 +328,10 @@ var _ domain.FolderMailbox = (*Mailbox)(nil)
 
 // moveTo relocates a message into a hidden sub-maildir. Read messages
 // (cur/) curate just like unread ones (new/).
-func (d *Mailbox) moveTo(sub, id string) error {
+func (d *Mailbox) moveTo(ctx context.Context, sub, id string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("briefkasten: move %q to %s: %w", id, sub, err)
+	}
 	from, err := d.locate(id)
 	if err != nil {
 		return err
@@ -233,21 +347,30 @@ func (d *Mailbox) moveTo(sub, id string) error {
 }
 
 // Archive moves a message — read or unread — to .archive/new: out of
-// the backlog, never destroyed.
-func (d *Mailbox) Archive(id string) error { return d.moveTo(".archive", id) }
+// the backlog, never destroyed, and still listable and fetchable through
+// the "Archive" folder.
+func (d *Mailbox) Archive(ctx context.Context, id string) error {
+	return d.moveTo(ctx, archiveDir, id)
+}
 
 // Delete moves a message — read or unread — to .trash/new: a soft
-// delete; real removal stays a human decision outside briefkasten.
-func (d *Mailbox) Delete(id string) error { return d.moveTo(".trash", id) }
+// delete; real removal stays a human decision outside briefkasten. The
+// message stays reachable through the "Trash" folder until then.
+func (d *Mailbox) Delete(ctx context.Context, id string) error {
+	return d.moveTo(ctx, trashDir, id)
+}
 
 // CurationPlan reports where curation files messages. The dir backend
 // owns its whole layout, so there is nothing to discover — the answer is
 // the same every time, and reported only so the surface matches the IMAP
 // backend rather than leaving humans to guess which one they are on.
-func (d *Mailbox) CurationPlan() (domain.CurationPlan, error) {
+func (d *Mailbox) CurationPlan(ctx context.Context) (domain.CurationPlan, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.CurationPlan{}, fmt.Errorf("briefkasten: curation plan: %w", err)
+	}
 	return domain.CurationPlan{
-		Archive: domain.CurationDestination{Folder: ".archive", Route: domain.RouteFixed},
-		Trash:   domain.CurationDestination{Folder: ".trash", Route: domain.RouteFixed},
+		Archive: domain.CurationDestination{Folder: archiveDir, Route: domain.RouteFixed},
+		Trash:   domain.CurationDestination{Folder: trashDir, Route: domain.RouteFixed},
 	}, nil
 }
 

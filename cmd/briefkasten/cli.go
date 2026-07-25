@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -62,6 +63,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	// One context for the whole command, handed to every mailbox call:
+	// the ports take one, and the CLI is not the place to invent a
+	// deadline the operator did not ask for.
+	ctx := commandContext()
+
 	// The CLI calls the same application service the MCP tools call —
 	// one use-case layer, two interfaces.
 	svc, err := buildService(cfg)
@@ -81,7 +87,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	switch cmd {
 	case "list":
-		ids, err := svc.List(*account, *folder, briefkasten.Scope(*scope))
+		ids, err := svc.List(ctx, *account, *folder, briefkasten.Scope(*scope))
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -94,7 +100,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "usage: briefkasten read <id>")
 			return 2
 		}
-		raw, err := svc.Read(*account, *folder, id)
+		raw, err := svc.Read(ctx, *account, *folder, id)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -107,7 +113,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "usage: briefkasten seen <id>")
 			return 2
 		}
-		if err := svc.MarkSeen(*account, *folder, id); err != nil {
+		if err := svc.MarkSeen(ctx, *account, *folder, id); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -119,7 +125,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "usage: briefkasten search <query>")
 			return 2
 		}
-		ids, err := svc.SearchScope(*account, *folder, query, briefkasten.Scope(*scope))
+		ids, err := svc.SearchScope(ctx, *account, *folder, query, briefkasten.Scope(*scope))
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -140,7 +146,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		// before anything moves, so a wrong destination is caught by
 		// reading rather than by finding mail somewhere unexpected.
 		if *curation {
-			plan, err := svc.CurationPlan(*account, *folder)
+			plan, err := svc.CurationPlan(ctx, *account, *folder)
 			if err != nil {
 				fmt.Fprintln(stderr, err)
 				return 1
@@ -152,7 +158,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 				plan)
 			break
 		}
-		folders, err := svc.Folders(*account)
+		folders, err := svc.Folders(ctx, *account)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -160,7 +166,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		emit(strings.Join(folders, "\n"), map[string]any{"folders": folders})
 
 	case "send":
-		ob, _, err := cfg.BuildOutbox()
+		ob, _, err := cfg.BuildClientOutbox()
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -191,7 +197,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return 1
 		}
 		// Deliver immediately: the CLI has no background worker.
-		if _, err := ob.ProcessOnce(contextTODO()); err != nil {
+		if _, err := ob.ProcessOnce(ctx); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -204,7 +210,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "usage: briefkasten retry <id>")
 			return 2
 		}
-		ob, _, err := cfg.BuildOutbox()
+		ob, _, err := cfg.BuildClientOutbox()
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -213,11 +219,14 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "retry: no outbox configured (set outbox.dir)")
 			return 1
 		}
+		// A message stranded in sending by a dead server has to reach
+		// failed before it can be re-queued, so retry repairs first.
+		repairOutbox(ob, stderr)
 		if err := ob.Retry(id); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		if _, err := ob.ProcessOnce(contextTODO()); err != nil {
+		if _, err := ob.ProcessOnce(ctx); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -231,7 +240,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		emit(human, machine)
 
 	case "outbox":
-		ob, _, err := cfg.BuildOutbox()
+		ob, _, err := cfg.BuildClientOutbox()
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -240,6 +249,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "outbox: no outbox configured (set outbox.dir)")
 			return 1
 		}
+		// Repair before reporting: a record listed as sending that no live
+		// process is sending is a lie the operator would act on.
+		repairOutbox(ob, stderr)
 		summary, err := ob.Summary()
 		if err != nil {
 			fmt.Fprintln(stderr, err)
@@ -290,7 +302,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		if cmd == "delete" {
 			op = svc.Delete
 		}
-		if err := op(*account, *folder, id); err != nil {
+		if err := op(ctx, *account, *folder, id); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -324,6 +336,21 @@ ever expunged. Both prompt for confirmation unless --yes.
 		return 2
 	}
 	return 0
+}
+
+// repairOutbox recovers the outbox for the client commands that need a
+// truthful picture of it. Recovery is deliberately not part of building a
+// client outbox: `send` has no business repairing old mail, and the
+// scenario that cost a duplicate delivery was exactly a send-time recovery
+// filing a live server's in-flight message as failed.
+//
+// Recover claims the outbox without waiting, so a live owner is left
+// strictly alone. Damage found on the way is reported and never blocks the
+// command — one unreadable record must not make the others unreachable.
+func repairOutbox(ob *briefkasten.Outbox, stderr io.Writer) {
+	if err := ob.Recover(); err != nil && !errors.Is(err, briefkasten.ErrOutboxBusy) {
+		fmt.Fprintln(stderr, err)
+	}
 }
 
 // isVersionRequest recognises the three spellings people actually try.
