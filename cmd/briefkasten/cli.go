@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	authdomain "github.com/klarlabs-studio/auth-go/domain"
@@ -22,6 +23,14 @@ import (
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		return serve(nil)
+	}
+	// "What is this binary?" is answered before any config is read or
+	// mailbox built — the question matters most on a machine where
+	// nothing is set up yet, which is exactly when someone is filing a
+	// bug report.
+	if isVersionRequest(args[0]) {
+		printVersion(stdout, wantsJSON(args[1:]))
+		return 0
 	}
 	if args[0] == "serve" {
 		return serve(args[1:])
@@ -273,10 +282,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	default:
 		fmt.Fprintf(stderr, `unknown command %q
 
-usage: briefkasten [serve|list|read|seen|search|folders|profiles|send|retry|outbox|archive|delete|hashpw]
+usage: briefkasten [serve|list|read|seen|search|folders|profiles|send|retry|outbox|archive|delete|hashpw|version]
 
 serve [--stdio] [--config FILE]   MCP server; --stdio serves over stdin/stdout
                                   instead of HTTP, for hosts that spawn it.
+
+--version (or version) prints the build metadata; add --json for a
+machine-readable form that also reports the toolchain and platform.
 
 list and search take --scope unread (default), read, or all. Listing and
 reading never change a message's state.
@@ -291,6 +303,49 @@ ever expunged. Both prompt for confirmation unless --yes.
 		return 2
 	}
 	return 0
+}
+
+// isVersionRequest recognises the three spellings people actually try.
+// The bare `version` verb shipped first, so it keeps working; the flag
+// forms exist because every other tool has them and reaching for
+// `--version` should not return "unknown command".
+func isVersionRequest(arg string) bool {
+	switch arg {
+	case "version", "--version", "-version":
+		return true
+	}
+	return false
+}
+
+// wantsJSON reports whether a --json flag trails the version request.
+// Version reporting runs before flag parsing — it must not depend on a
+// flag set built around a mailbox command — so the scan is explicit.
+func wantsJSON(args []string) bool {
+	for _, a := range args {
+		if a == "--json" || a == "-json" {
+			return true
+		}
+	}
+	return false
+}
+
+// printVersion reports the build metadata goreleaser injects. The human
+// line is byte-for-byte what the `version` verb has always printed, so
+// anything parsing it keeps working; the JSON form adds the toolchain
+// and platform, which is what a bug report actually needs.
+func printVersion(stdout io.Writer, asJSON bool) {
+	if asJSON {
+		raw, _ := json.MarshalIndent(map[string]string{
+			"version":  version,
+			"commit":   commit,
+			"date":     date,
+			"go":       runtime.Version(),
+			"platform": runtime.GOOS + "/" + runtime.GOARCH,
+		}, "", "  ")
+		fmt.Fprintln(stdout, string(raw))
+		return
+	}
+	fmt.Fprintf(stdout, "briefkasten %s (commit: %s, built: %s)\n", version, commit, date)
 }
 
 // confirmPrompt asks the human; only an explicit y/yes proceeds.

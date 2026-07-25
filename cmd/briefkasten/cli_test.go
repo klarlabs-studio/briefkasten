@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -146,5 +147,63 @@ func TestCLISendWithAttachment(t *testing.T) {
 	}
 	if !strings.Contains(got, "application/pdf") {
 		t.Errorf("delivered message missing attachment content type:\n%s", got)
+	}
+}
+
+// Version reporting runs before config loading and mailbox construction:
+// asking a binary what it is must work on a machine with no mailbox
+// configured at all, which is exactly when someone is filing a bug.
+func TestCLIVersionFlagAndSubcommand(t *testing.T) {
+	for _, arg := range []string{"--version", "-version", "version"} {
+		code, out, errOut := runCLI(t, "", arg)
+		if code != 0 {
+			t.Errorf("%s = exit %d, stderr %q", arg, code, errOut)
+		}
+		if !strings.HasPrefix(out, "briefkasten ") {
+			t.Errorf("%s printed %q, want it to lead with the binary name", arg, out)
+		}
+		for _, want := range []string{version, "commit:", commit, "built:", date} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s output %q missing %q", arg, out, want)
+			}
+		}
+	}
+}
+
+// The machine-readable form exists for bug reports and support scripts.
+func TestCLIVersionJSON(t *testing.T) {
+	code, out, _ := runCLI(t, "", "--version", "--json")
+	if code != 0 {
+		t.Fatalf("--version --json = exit %d", code)
+	}
+	var got struct {
+		Version  string `json:"version"`
+		Commit   string `json:"commit"`
+		Date     string `json:"date"`
+		Go       string `json:"go"`
+		Platform string `json:"platform"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("not valid JSON: %v (%q)", err, out)
+	}
+	if got.Version != version || got.Commit != commit || got.Date != date {
+		t.Errorf("json = %+v, want the build vars", got)
+	}
+	if got.Go == "" || got.Platform == "" {
+		t.Errorf("json = %+v, want go and platform filled for bug reports", got)
+	}
+}
+
+// A version request must not be mistaken for a mailbox command, even
+// though every other verb needs a working backend.
+func TestCLIVersionNeedsNoConfig(t *testing.T) {
+	t.Setenv("BRIEFKASTEN_CONFIG", filepath.Join(t.TempDir(), "does-not-exist.yaml"))
+
+	code, out, errOut := runCLI(t, "", "--version")
+	if code != 0 {
+		t.Fatalf("--version with a missing config = exit %d, stderr %q", code, errOut)
+	}
+	if !strings.Contains(out, version) {
+		t.Errorf("out = %q, want the version", out)
 	}
 }

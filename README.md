@@ -137,6 +137,24 @@ briefkasten outbox            # outbound ids by lifecycle state
 briefkasten archive <id>      # prompts y/N; --yes to skip
 briefkasten delete  <id>      # prompts y/N; soft delete — to trash
 briefkasten hashpw            # argon2id hash for auth.basic.password_hash
+briefkasten --version         # or `version`; --json adds toolchain + platform
+```
+
+`--version` answers before any config is read, so it works on a machine
+where nothing is set up yet:
+
+```bash
+$ briefkasten --version
+briefkasten 0.21.0 (commit: ebe0094a073a…, built: 2026-07-25T11:43:43Z)
+
+$ briefkasten --version --json
+{
+  "commit": "ebe0094a073a…",
+  "date": "2026-07-25T11:43:43Z",
+  "go": "go1.26.3",
+  "platform": "darwin/arm64",
+  "version": "0.21.0"
+}
 ```
 
 ### Human-in-the-loop curation
