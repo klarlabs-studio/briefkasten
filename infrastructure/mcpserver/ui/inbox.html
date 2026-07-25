@@ -113,14 +113,31 @@
 // Minimal MCP Apps bridge: JSON-RPC 2.0 over postMessage to the host.
 let seq = 0;
 const pending = new Map();
+// The host is the only window allowed to answer. Without this check any
+// frame that can reach this one — a sibling, an opener, an ad frame in a
+// host that embeds several — can resolve a pending call with a result we
+// never asked for, and the reply is rendered as mail. It cannot call a
+// tool (requests only ever go up to the parent) but forging the answers
+// is enough to put arbitrary content in front of the human.
+//
+// ev.source is compared rather than ev.origin because an MCP Apps frame
+// does not know its host's origin in advance, and a sandboxed host has
+// origin "null" — a value several windows can share, so it identifies
+// nobody. The source is a window reference: it is exactly one window.
+let hostOrigin = null;
 window.addEventListener('message', (ev) => {
+  if (ev.source !== window.parent) return;
   const m = ev.data;
-  if (m && m.jsonrpc === '2.0' && pending.has(m.id)) {
-    const { resolve, reject } = pending.get(m.id);
-    pending.delete(m.id);
-    if (m.error) reject(new Error(m.error.message || 'tool error'));
-    else resolve(m.result);
-  }
+  if (!m || m.jsonrpc !== '2.0' || !pending.has(m.id)) return;
+  // Remember where the host speaks from, so replies stop being broadcast.
+  // "null" is deliberately not remembered: it is what a sandboxed frame
+  // reports, and targeting it would break the bridge rather than tighten
+  // it, so those hosts keep the wildcard.
+  if (hostOrigin === null && ev.origin && ev.origin !== 'null') hostOrigin = ev.origin;
+  const { resolve, reject } = pending.get(m.id);
+  pending.delete(m.id);
+  if (m.error) reject(new Error(m.error.message || 'tool error'));
+  else resolve(m.result);
 });
 
 // Reads answer straight away; archive, delete, and send are gated on a
@@ -132,9 +149,11 @@ function callTool(name, args, timeoutMs) {
   return new Promise((resolve, reject) => {
     const id = 'ui-' + ++seq;
     pending.set(id, { resolve, reject });
+    // Targeted once the host has identified itself; '*' only until then,
+    // and for sandboxed hosts that have no origin to target.
     window.parent.postMessage(
       { jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args || {} } },
-      '*',
+      hostOrigin || '*',
     );
     setTimeout(() => {
       if (pending.has(id)) {

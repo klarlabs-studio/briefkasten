@@ -205,3 +205,29 @@ func TestFoldersResourceReportsCurationPlan(t *testing.T) {
 		t.Errorf("route = %q, want %q for the dir backend", payload.Curation.Trash.Route, domain.RouteFixed)
 	}
 }
+
+// The inbox UI's bridge must accept answers only from its host. Any frame
+// that can post to it could otherwise resolve a pending call with a
+// fabricated result, and the reply is rendered as mail — forging the
+// answers is enough to put arbitrary content in front of the human, even
+// though a foreign frame cannot invoke a tool.
+func TestInboxUIAcceptsRepliesOnlyFromItsHost(t *testing.T) {
+	client, _ := newClient(t)
+
+	page, err := client.ReadResource(InboxUIResourceURI)
+	if err != nil {
+		t.Fatalf("read UI resource: %v", err)
+	}
+	if !strings.Contains(page, "ev.source !== window.parent") {
+		t.Error("the bridge does not check the message source — any frame can answer a pending call")
+	}
+	// A sandboxed host reports origin "null", which identifies nobody, so
+	// the wildcard has to survive for those. Pinning it would break the
+	// bridge rather than tighten it.
+	if !strings.Contains(page, "hostOrigin || '*'") {
+		t.Error("outbound calls are not targeted at the learned host origin")
+	}
+	if !strings.Contains(page, `ev.origin !== 'null'`) {
+		t.Error("a sandboxed host's \"null\" origin must not be pinned as the target")
+	}
+}
