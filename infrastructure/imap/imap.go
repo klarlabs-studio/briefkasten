@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 
 	"go.klarlabs.de/briefkasten/domain"
@@ -24,6 +25,12 @@ type Config struct {
 	Password string
 	// Mailbox is the mailbox to read. Defaults to "INBOX".
 	Mailbox string
+	// ArchiveFolder and TrashFolder pin where curation files messages.
+	// Empty means discover: the server's SPECIAL-USE declaration first,
+	// then the personal namespace's conventional path. Set these only
+	// when a server's layout defies both.
+	ArchiveFolder string
+	TrashFolder   string
 	// Insecure dials without TLS. For tests and local servers only.
 	Insecure bool
 	// TLSConfig optionally overrides the TLS client configuration.
@@ -256,12 +263,98 @@ func (m *Mailbox) MarkSeen(id string) error {
 	return nil
 }
 
-// fileTo copies a message into the named folder (created when missing)
-// and marks the original seen. Deliberately not MOVE: MOVE expunges the
-// source, and briefkasten never expunges — the original survives, seen.
-// The UID is all that identifies the message, so already-read mail
-// curates exactly like unread mail.
-func (m *Mailbox) fileTo(folder, id string) error {
+// curationTarget names one destination for a soft move, in the three
+// ways a server might describe it: what the operator pinned, what the
+// server declares via RFC 6154 SPECIAL-USE, and the conventional leaf
+// name to place inside the personal namespace.
+type curationTarget struct {
+	override string
+	attr     imap.MailboxAttr
+	leaf     string
+}
+
+// resolveCurationFolder finds where a soft move should land, in order of
+// authority: the operator's override, the server's own SPECIAL-USE
+// declaration, then the personal namespace's conventional path.
+//
+// The namespace step is not a fallback for exotic servers — it is the
+// common case. A mailbox rooted at "INBOX." holds its Trash at
+// "INBOX.Trash", and plenty of such servers advertise \Trash while
+// staying silent about \Archive. Copying to a bare "Archive" there
+// fails, and creating one puts a stray folder outside the namespace the
+// user's mail client reads.
+func (m *Mailbox) resolveCurationFolder(c *imapclient.Client, t curationTarget) (string, error) {
+	if t.override != "" {
+		return t.override, nil
+	}
+
+	boxes, err := c.List("", "*", &imap.ListOptions{ReturnSpecialUse: true}).Collect()
+	if err != nil {
+		return "", fmt.Errorf("imap: cannot resolve the %s folder: %w", t.leaf, err)
+	}
+	prefix := m.personalPrefix(c)
+
+	folder, mustCreate := chooseCurationFolder(t, boxes, prefix)
+	if !mustCreate {
+		return folder, nil
+	}
+	// Nothing to file into yet. Create it where the namespace says it
+	// belongs, so it lands beside the user's other folders rather than
+	// somewhere their mail client will never look.
+	if err := c.Create(folder, nil).Wait(); err != nil {
+		return "", fmt.Errorf(
+			"imap: no %s folder found (no mailbox declares %s, and neither %q nor %q exists) and creating %q failed: %w",
+			t.leaf, t.attr, prefix+t.leaf, t.leaf, folder, err)
+	}
+	return folder, nil
+}
+
+// chooseCurationFolder decides where a soft move lands from what the
+// server listed and where its personal namespace is rooted. Pure, so
+// every server shape is testable without one: the layout that matters
+// most here — a namespace rooted at "INBOX." whose server declares
+// \Trash but not \Archive — is precisely the one an in-memory test
+// server will not reproduce.
+//
+// Order of authority: the server's own SPECIAL-USE declaration, then an
+// existing folder at the namespace's conventional path, then an existing
+// flat folder, and only then a path to create.
+func chooseCurationFolder(t curationTarget, boxes []*imap.ListData, prefix string) (folder string, mustCreate bool) {
+	existing := make(map[string]bool, len(boxes))
+	for _, b := range boxes {
+		if slices.Contains(b.Attrs, t.attr) {
+			return b.Mailbox, false
+		}
+		existing[b.Mailbox] = true
+	}
+	switch {
+	case existing[prefix+t.leaf]:
+		return prefix + t.leaf, false
+	case existing[t.leaf]:
+		// A flat server, or one whose personal namespace is the root.
+		return t.leaf, false
+	default:
+		return prefix + t.leaf, true
+	}
+}
+
+// personalPrefix reports where the user's own folders are rooted (e.g.
+// "INBOX." on servers that nest everything under the inbox), or "" when
+// the server does not answer or roots them at the top.
+func (m *Mailbox) personalPrefix(c *imapclient.Client) string {
+	ns, err := c.Namespace().Wait()
+	if err != nil || ns == nil || len(ns.Personal) == 0 {
+		return ""
+	}
+	return ns.Personal[0].Prefix
+}
+
+// fileTo copies a message into the resolved folder and marks the
+// original seen. Deliberately not MOVE: MOVE expunges the source, and
+// briefkasten never expunges — the original survives, seen. The UID is
+// all that identifies the message, so already-read mail curates exactly
+// like unread mail.
+func (m *Mailbox) fileTo(t curationTarget, id string) error {
 	uid, err := parseUID(id)
 	if err != nil {
 		return err
@@ -271,6 +364,11 @@ func (m *Mailbox) fileTo(folder, id string) error {
 		return err
 	}
 	defer closeClient(c)
+
+	folder, err := m.resolveCurationFolder(c, t)
+	if err != nil {
+		return err
+	}
 
 	// COPY of a UID that is not in the mailbox is a no-op most servers
 	// answer OK to, which would report a soft move that never happened.
@@ -284,14 +382,11 @@ func (m *Mailbox) fileTo(folder, id string) error {
 		return fmt.Errorf("%w: %s", domain.ErrBadID, id)
 	}
 
+	// The destination is resolved, not guessed, so a copy failure here is
+	// a real fault worth surfacing rather than something to paper over by
+	// creating a folder the server did not ask for.
 	if _, err := c.Copy(imap.UIDSetNum(uid), folder).Wait(); err != nil {
-		// Folder may not exist yet: create and retry once.
-		if cerr := c.Create(folder, nil).Wait(); cerr != nil {
-			return fmt.Errorf("imap: copy %s to %s: %w", id, folder, err)
-		}
-		if _, err := c.Copy(imap.UIDSetNum(uid), folder).Wait(); err != nil {
-			return fmt.Errorf("imap: copy %s to %s: %w", id, folder, err)
-		}
+		return fmt.Errorf("imap: copy %s to %s: %w", id, folder, err)
 	}
 	if err := c.Store(imap.UIDSetNum(uid), &imap.StoreFlags{
 		Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagSeen},
@@ -301,14 +396,28 @@ func (m *Mailbox) fileTo(folder, id string) error {
 	return nil
 }
 
-// Archive files the message into the Archive folder (created when
-// missing); the original is marked seen, never expunged.
-func (m *Mailbox) Archive(id string) error { return m.fileTo("Archive", id) }
+// Archive files the message into the server's archive folder; the
+// original is marked seen, never expunged. The destination is whatever
+// the server calls its archive — many advertise \Trash but not
+// \Archive, so this commonly resolves through the namespace path.
+func (m *Mailbox) Archive(id string) error {
+	return m.fileTo(curationTarget{
+		override: m.cfg.ArchiveFolder,
+		attr:     imap.MailboxAttrArchive,
+		leaf:     "Archive",
+	}, id)
+}
 
-// Delete files the message into the Trash folder — a soft delete; real
-// removal stays with the mail provider's retention, briefkasten never
-// expunges.
-func (m *Mailbox) Delete(id string) error { return m.fileTo("Trash", id) }
+// Delete files the message into the server's trash folder — a soft
+// delete; real removal stays with the mail provider's retention,
+// briefkasten never expunges.
+func (m *Mailbox) Delete(id string) error {
+	return m.fileTo(curationTarget{
+		override: m.cfg.TrashFolder,
+		attr:     imap.MailboxAttrTrash,
+		leaf:     "Trash",
+	}, id)
+}
 
 var _ domain.Curator = (*Mailbox)(nil)
 

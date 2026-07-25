@@ -101,6 +101,12 @@ type IMAPSettings struct {
 	Mailbox  string          `yaml:"mailbox"`
 	Insecure bool            `yaml:"insecure"`
 	OAuth2   *OAuth2Settings `yaml:"oauth2"`
+	// ArchiveFolder and TrashFolder pin where curation files messages.
+	// Empty means discover: the server's SPECIAL-USE declaration, then
+	// the personal namespace's conventional path. Set them only when a
+	// server's layout defies both.
+	ArchiveFolder string `yaml:"archive_folder"`
+	TrashFolder   string `yaml:"trash_folder"`
 }
 
 // OutboxSettings configures outbound mail.
@@ -177,7 +183,10 @@ func (c *Config) BuildAccounts() (map[string]Mailbox, error) {
 		return nil, nil
 	}
 	out := make(map[string]Mailbox, len(c.Accounts))
-	for name, a := range c.Accounts {
+	for name := range c.Accounts {
+		// Indexed rather than ranged by value: AccountSettings carries the
+		// full IMAP block, so copying one per iteration is pure waste.
+		a := c.Accounts[name]
 		sub := &Config{Backend: a.Backend, Maildir: a.Maildir, IMAP: a.IMAP}
 		mb, _, err := sub.BuildMailbox()
 		if err != nil {
@@ -406,12 +415,14 @@ func (c *Config) BuildMailbox() (Mailbox, string, error) {
 			}
 		}
 		mb, err := NewIMAPMailbox(IMAPConfig{
-			Addr:     c.IMAP.Addr,
-			Username: c.IMAP.Username,
-			Password: c.IMAP.Password,
-			Mailbox:  c.IMAP.Mailbox,
-			Insecure: c.IMAP.Insecure,
-			OAuth2:   c.IMAP.OAuth2,
+			Addr:          c.IMAP.Addr,
+			Username:      c.IMAP.Username,
+			Password:      c.IMAP.Password,
+			Mailbox:       c.IMAP.Mailbox,
+			Insecure:      c.IMAP.Insecure,
+			OAuth2:        c.IMAP.OAuth2,
+			ArchiveFolder: c.IMAP.ArchiveFolder,
+			TrashFolder:   c.IMAP.TrashFolder,
 		})
 		if err != nil {
 			return nil, "", err

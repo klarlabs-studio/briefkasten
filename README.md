@@ -170,10 +170,35 @@ Archive and delete are deliberately guarded, everywhere:
   `.archive`/`.trash` sub-maildirs; IMAP copies into Archive/Trash and
   marks the original seen — deliberately not `MOVE`, which expunges.
   Briefkasten never destroys data.
+- **The destination is discovered, not assumed**: briefkasten asks the
+  server where its archive and trash live rather than hardcoding folder
+  names. See below.
 - **Read mail is no exception**: widening the scope widens what an agent
   can *see*, never what it may do unattended. Curating an
   already-processed message passes through the same gate as curating the
   backlog, and a stale id is rejected rather than reported as moved.
+
+### Where curated mail lands (IMAP)
+
+Servers disagree about where archive and trash live. Many root every
+folder under the inbox — `INBOX.Trash`, not `Trash` — so a hardcoded
+name copies into nothing and, worse, invites creating a stray folder
+outside the namespace the user's mail client reads. Briefkasten asks
+instead, in order of authority:
+
+1. **`archive_folder` / `trash_folder` in config** — an explicit
+   override, for layouts that defy discovery.
+2. **The server's own declaration** (RFC 6154 SPECIAL-USE) — whichever
+   mailbox is marked `\Archive` or `\Trash`.
+3. **The personal namespace's conventional path** — the prefix reported
+   by `NAMESPACE` plus `Archive`/`Trash`, used when it already exists.
+
+Only when none of those resolve does briefkasten create a folder, and it
+creates it *inside* the namespace. If that fails, the error names every
+location it looked in rather than reporting a move that never happened.
+
+Servers commonly declare `\Trash` but not `\Archive`, so the two often
+resolve by different routes on the same mailbox — that is expected.
 
 ## Configure
 
@@ -190,6 +215,8 @@ imap:
   username: alice
   password: "..."
   mailbox: INBOX
+  archive_folder: ""     # optional; empty means discover (see below)
+  trash_folder: ""       # optional; empty means discover
 runtime_config: false    # enable config.get / config.set MCP tools
 profiles:                # named configurations, switchable at runtime
   personal:
@@ -446,9 +473,11 @@ imap:
   password: "<app password>"
 ```
 
-Briefkasten only sets the `\Seen` flag — Gmail's "mark as read". Nothing
-is archived or deleted; use a Gmail filter + label and set
-`imap.mailbox` to that label to scope what the connector sees.
+Briefkasten only sets the `\Seen` flag — Gmail's "mark as read" — unless
+you archive or delete, which file into whichever mailbox Gmail declares
+as `\Archive` / `\Trash` (see [Where curated mail
+lands](#where-curated-mail-lands-imap)). Use a Gmail filter + label and
+set `imap.mailbox` to that label to scope what the connector sees.
 
 ## Consume
 
