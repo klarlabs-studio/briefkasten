@@ -15,6 +15,9 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
-      - uses: klarlabs-studio/warden/.github/actions/warden-verify@main
+      # Pinned by SHA like every other action here. @main is mutable: the
+      # job that decides whether a commit is provenance-verified should
+      # not itself run code that can change without a diff.
+      - uses: klarlabs-studio/warden/.github/actions/warden-verify@642dc4736a5be191adaec2f03240ffc13bd74d46 # main @ 2026-07-25
         with:
           commit: ${{ github.event.pull_request.head.sha }}

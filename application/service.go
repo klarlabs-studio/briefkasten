@@ -121,7 +121,10 @@ func (s *Service) Search(ctx context.Context, account, folder, query string) ([]
 	return s.SearchScope(ctx, account, folder, query, domain.ScopeUnread)
 }
 
-// SearchScope finds messages within scope matching the query.
+// SearchScope finds messages within scope matching the query. A backend
+// without a native search is scanned instead, and a scope holding more
+// than MaxScanMessages messages is refused with ErrScanTooLarge rather
+// than scanned to the cap and answered as if it were complete.
 func (s *Service) SearchScope(ctx context.Context, account, folder, query string, scope domain.Scope) ([]string, error) {
 	scope, err := domain.ParseScope(string(scope))
 	if err != nil {
@@ -400,7 +403,8 @@ func listMailbox(ctx context.Context, mb domain.Mailbox, scope domain.Scope) ([]
 }
 
 // searchMailbox searches via the backend's ScopedSearcher or Searcher
-// when available, otherwise falls back to scanning the scope's ids.
+// when available, otherwise falls back to scanning the scope's ids —
+// bounded by MaxScanMessages, checked before the first message is read.
 func searchMailbox(ctx context.Context, mb domain.Mailbox, scope domain.Scope, query string) ([]string, error) {
 	if s, ok := mb.(domain.ScopedSearcher); ok {
 		return s.SearchScope(ctx, scope, query)
@@ -410,6 +414,9 @@ func searchMailbox(ctx context.Context, mb domain.Mailbox, scope domain.Scope, q
 	}
 	ids, err := listMailbox(ctx, mb, scope)
 	if err != nil {
+		return nil, err
+	}
+	if err := domain.CheckScanBudget(len(ids), scope); err != nil {
 		return nil, err
 	}
 	needle := []byte(strings.ToLower(query))
