@@ -36,6 +36,10 @@ type (
 	ScopedSearcher  = domain.ScopedSearcher
 	FolderMailbox   = domain.FolderMailbox
 	Curator         = domain.Curator
+	BulkMailbox     = domain.BulkMailbox
+	BulkCurator     = domain.BulkCurator
+	BulkResult      = domain.BulkResult
+	BulkFailure     = domain.BulkFailure
 	Sender          = domain.Sender
 	OutboundMessage = domain.OutboundMessage
 	Attachment      = domain.Attachment
@@ -55,6 +59,12 @@ var ErrBadID = domain.ErrBadID
 
 // ErrBadScope rejects listing scopes outside unread/read/all.
 var ErrBadScope = domain.ErrBadScope
+
+// ErrBulkSize rejects a batch that is empty, over the cap, or repeats an id.
+var ErrBulkSize = domain.ErrBulkSize
+
+// MaxBulkIDs caps how many messages one bulk call may act on.
+const MaxBulkIDs = domain.MaxBulkIDs
 
 // Application types.
 type (

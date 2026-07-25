@@ -94,6 +94,16 @@ func (s *Service) MarkSeen(ctx context.Context, account, folder, id string) erro
 	return box.MarkSeen(ctx, id)
 }
 
+// MarkSeenMany acknowledges a batch of processed messages, reporting the
+// outcome per id. Idempotent per id, exactly like MarkSeen.
+func (s *Service) MarkSeenMany(ctx context.Context, account, folder string, ids []string) (domain.BulkResult, error) {
+	box, err := s.Resolve(ctx, account, folder)
+	if err != nil {
+		return domain.BulkResult{}, err
+	}
+	return markSeenMany(ctx, box, ids)
+}
+
 // Search finds unread messages matching the query. Backends with a
 // Searcher search natively; everything else gets the scan fallback.
 func (s *Service) Search(ctx context.Context, account, folder, query string) ([]string, error) {
@@ -164,6 +174,28 @@ func (s *Service) Delete(ctx context.Context, account, folder, id string) error 
 	return cu.Delete(ctx, id)
 }
 
+// ArchiveMany files a batch of messages away, reporting the outcome per
+// id. The caller must have obtained human confirmation for the batch as
+// a whole — one gesture, stated blast radius.
+func (s *Service) ArchiveMany(ctx context.Context, account, folder string, ids []string) (domain.BulkResult, error) {
+	box, err := s.Resolve(ctx, account, folder)
+	if err != nil {
+		return domain.BulkResult{}, err
+	}
+	return curateMany(ctx, box, ids, actionArchive)
+}
+
+// DeleteMany moves a batch of messages to trash, reporting the outcome
+// per id. Soft, like Delete: nothing is expunged, and nothing is rolled
+// back if part of the batch fails.
+func (s *Service) DeleteMany(ctx context.Context, account, folder string, ids []string) (domain.BulkResult, error) {
+	box, err := s.Resolve(ctx, account, folder)
+	if err != nil {
+		return domain.BulkResult{}, err
+	}
+	return curateMany(ctx, box, ids, actionDelete)
+}
+
 // CurationPlan reports where Archive and Delete would file, without
 // moving anything — so a human can check the destination before
 // approving a move rather than inferring it from where mail landed.
@@ -190,6 +222,81 @@ func (s *Service) curator(ctx context.Context, account, folder string) (domain.C
 	}
 	return cu, nil
 }
+
+// bulkEach is the shared bulk fallback: it applies op to one id at a
+// time and collects the outcomes, so a backend without native batching
+// gets correct per-id behaviour for free. The maildir backend wants
+// exactly this — its operations are local renames with no round trip to
+// save, so bespoke batching there would be extra code buying nothing.
+//
+// Every id gets its own outcome. A failure is recorded and the loop
+// continues: the whole point of the per-id report is that one unusable
+// id does not sink the rest of the batch.
+//
+// Cancellation is the one thing that stops the loop. It is returned as
+// an error rather than recorded per id because nobody is waiting for the
+// report any more, and the ids not yet attempted were not failures — the
+// partial result travels with the error for a caller that wants it.
+func bulkEach(ctx context.Context, ids []string, op func(context.Context, string) error) (domain.BulkResult, error) {
+	res := domain.NewBulkResult(len(ids))
+	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			return res, err
+		}
+		if err := op(ctx, id); err != nil {
+			res.Fail(id, err)
+			continue
+		}
+		res.Succeed(id)
+	}
+	return res, nil
+}
+
+// markSeenMany acknowledges a batch: natively when the backend batches,
+// id by id otherwise.
+func markSeenMany(ctx context.Context, mb domain.Mailbox, ids []string) (domain.BulkResult, error) {
+	if err := domain.CheckBulkIDs(ids); err != nil {
+		return domain.BulkResult{}, err
+	}
+	if bm, ok := mb.(domain.BulkMailbox); ok {
+		return bm.MarkSeenMany(ctx, ids)
+	}
+	return bulkEach(ctx, ids, mb.MarkSeen)
+}
+
+// curateMany files a batch away. The cap is checked here, before any
+// dispatch, so it holds for every backend rather than only the ones that
+// batch natively.
+func curateMany(
+	ctx context.Context, mb domain.Mailbox, ids []string, action curationAction,
+) (domain.BulkResult, error) {
+	if err := domain.CheckBulkIDs(ids); err != nil {
+		return domain.BulkResult{}, err
+	}
+	if bc, ok := mb.(domain.BulkCurator); ok {
+		if action == actionArchive {
+			return bc.ArchiveMany(ctx, ids)
+		}
+		return bc.DeleteMany(ctx, ids)
+	}
+	cu, ok := mb.(domain.Curator)
+	if !ok {
+		return domain.BulkResult{}, errors.New("briefkasten: backend has no curation support")
+	}
+	if action == actionArchive {
+		return bulkEach(ctx, ids, cu.Archive)
+	}
+	return bulkEach(ctx, ids, cu.Delete)
+}
+
+// curationAction names which soft move a bulk call performs, so the two
+// paths share one implementation instead of drifting apart.
+type curationAction string
+
+const (
+	actionArchive curationAction = "archive"
+	actionDelete  curationAction = "delete"
+)
 
 // listMailbox lists via the backend's ScopedMailbox when available. A
 // backend without it can only speak for the unread backlog, so a wider

@@ -139,26 +139,26 @@ func elicitCtx(t *testing.T, sender server.RequestSender) context.Context {
 func TestConfirmCurationElicitation(t *testing.T) {
 	// The user accepts: the operation proceeds.
 	ctx := elicitCtx(t, &fakeElicitSender{action: "accept"})
-	if err := confirmCuration(ctx, false, "delete", "m1.eml", "INBOX.Trash"); err != nil {
+	if err := confirmCuration(ctx, false, "delete", []string{"m1.eml"}, "INBOX.Trash"); err != nil {
 		t.Errorf("accepted elicitation = %v, want nil", err)
 	}
 
 	// The user declines: a non-retryable refusal naming the action.
 	ctx = elicitCtx(t, &fakeElicitSender{action: "decline"})
-	err := confirmCuration(ctx, false, "delete", "m1.eml", "INBOX.Trash")
+	err := confirmCuration(ctx, false, "delete", []string{"m1.eml"}, "INBOX.Trash")
 	if err == nil || !strings.Contains(err.Error(), "declined by user") {
 		t.Errorf("declined elicitation = %v, want declined error", err)
 	}
 
 	// The elicitation transport fails: the model is told to ask the human.
 	ctx = elicitCtx(t, &fakeElicitSender{err: errors.New("transport down")})
-	err = confirmCuration(ctx, false, "delete", "m1.eml", "INBOX.Trash")
+	err = confirmCuration(ctx, false, "delete", []string{"m1.eml"}, "INBOX.Trash")
 	if err == nil || !strings.Contains(err.Error(), "confirmation elicitation failed") {
 		t.Errorf("failed elicitation = %v, want elicitation-failed error", err)
 	}
 
 	// confirm=true bypasses elicitation entirely.
-	if err := confirmCuration(t.Context(), true, "delete", "m1.eml", "INBOX.Trash"); err != nil {
+	if err := confirmCuration(t.Context(), true, "delete", []string{"m1.eml"}, "INBOX.Trash"); err != nil {
 		t.Errorf("pre-confirmed = %v, want nil", err)
 	}
 }

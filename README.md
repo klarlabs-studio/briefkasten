@@ -12,19 +12,47 @@ contract instead of binding to IMAP libraries:
 | `email.list` | `{"scope?": "unread\|read\|all", "limit?"}` → `{"ids": ["..."], "total": N, "scope": "unread"}` — `scope` defaults to `unread` |
 | `email.list_unread` | `{"limit?"}` → `{"ids": ["..."], "total": N}` — `email.list` with `scope=unread` |
 | `email.fetch` | `{"id": "..."}` → `{"raw": "<base64 RFC 5322>"}` — read or unread; never sets `\Seen` |
-| `email.mark_seen` | `{"id": "..."}` → `{"ok": true}` — message won't be listed again; idempotent, so re-acknowledging read mail is not an error |
+| `email.mark_seen` | `{"id"}` → `{"ok": true}`, or `{"ids": [...]}` → `{"marked": [...], "failed": [...], "total": N}` — message won't be listed again; idempotent, so re-acknowledging read mail is not an error |
 | `email.send`* | `{"to": [...], "subject", "body", "html_body?", "attachments?": [{"filename", "content_type", "content": "<base64>"}]}` → `{"id", "state": "queued"}` — attachments ≤ 10 MiB each, ≤ 25 MiB per message |
 | `email.send_status`* | `{"id"}` → `{"state": "queued\|sending\|sent\|failed", "attempts", "error?"}` |
 | `email.retry`* | `{"id"}` → `{"id", "state": "queued"}` — re-queue a failed send |
 | `email.search` | `{"query", "scope?", "folder?", "account?", "limit?"}` → `{"ids": [...], "total": N, "scope": "unread"}` — case-insensitive; IMAP searches server-side |
-| `email.archive` | `{"id", "confirm?"}` → `{"ok": true}` — **human-confirmed** (elicitation or confirm flag); soft: filed to Archive, never destroyed; read or unread |
-| `email.delete` | `{"id", "confirm?"}` → `{"ok": true}` — **human-confirmed**; soft delete to Trash, never expunged; read or unread |
+| `email.archive` | `{"id" \| "ids", "confirm?"}` → `{"ok": true}` / `{"archived": [...], "failed": [...], "total": N}` — **human-confirmed** (elicitation or confirm flag); soft: filed to Archive, never destroyed; read or unread |
+| `email.delete` | `{"id" \| "ids", "confirm?"}` → `{"ok": true}` / `{"deleted": [...], "failed": [...], "total": N}` — **human-confirmed**; soft delete to Trash, never expunged; read or unread |
 
 Every mailbox tool — `email.list`, `email.list_unread`, `email.fetch`,
 `email.mark_seen`, `email.search`, `email.archive`, and `email.delete` —
 accepts optional `folder` (see `email://folders`) and `account` (see
 `email://accounts`) arguments. `limit` caps the ids returned; `total`
 always reports the full count.
+
+### Bulk: many ids, one call
+
+`email.mark_seen`, `email.archive`, and `email.delete` take either `id`
+(one message) or `ids` (a batch of up to **100**) — exactly one of the
+two; both, or neither, is refused. On IMAP a batch costs what one
+message costs: the curation folder is resolved once, and one `UID FETCH`,
+one `UID COPY` and one `UID STORE` carry the whole set. Fifty deletes go
+from **301 commands to 7**. Backends that gain nothing from batching
+(the dir backend: local renames, no round trips) loop through a shared
+fallback and behave identically to the caller.
+
+Three properties are deliberate:
+
+- **Explicit ids only.** There is no predicate or "all matching" form.
+  Message content reaches every tool, so a bulk-by-query delete would let
+  one injected sentence in an email body destroy an unbounded amount of
+  mail. The caller enumerates with `email.list`/`email.search` and passes
+  the list it can be held to.
+- **Per-id results, never a single `ok`.** A batch is not a transaction
+  and nothing is rolled back, so the response names what moved and what
+  did not, with a reason per id: `{"deleted": ["a"], "failed": [{"id":
+  "b", "error": "…invalid message id: b"}], "total": 2}`. A single `id`
+  keeps the old `{"ok": true}`.
+- **One confirmation, stating the blast radius.** The elicitation prompt
+  names the count, the resolved destination folder and the ids —
+  `Confirm delete of 3 messages? They will be filed into "INBOX.Trash" —
+  moved, never destroyed. Messages: a.eml, b.eml, c.eml.`
 
 ### Scope: read mail, not just unread
 
@@ -127,15 +155,15 @@ The same binary is a human client over the same mailbox:
 ```bash
 briefkasten list   [--scope unread|read|all] [--folder F] [--account A] [--json]
 briefkasten read   <id>
-briefkasten seen   <id>
+briefkasten seen   <id> [id ...]
 briefkasten search <query> [--scope unread|read|all]
 briefkasten folders [--curation]   # --curation: where archive/delete would file
 briefkasten profiles          # names switchable via config.set {"profile": ...}
 briefkasten send   --to a@b.c --subject S --body B [--html '<p>H</p>'] [--attach file.pdf ...]
 briefkasten retry  <id>       # re-queue a failed send and deliver
 briefkasten outbox            # outbound ids by lifecycle state
-briefkasten archive <id>      # prompts y/N; --yes to skip
-briefkasten delete  <id>      # prompts y/N; soft delete — to trash
+briefkasten archive <id> [id ...]   # prompts y/N once; --yes to skip
+briefkasten delete  <id> [id ...]   # prompts y/N; soft delete — to trash
 briefkasten hashpw            # argon2id hash for auth.basic.password_hash
 briefkasten --version         # or `version`; --json adds toolchain + platform
 ```
@@ -165,7 +193,8 @@ Archive and delete are deliberately guarded, everywhere:
   elicitation (the host shows a confirmation; decline aborts). Clients
   without elicitation must pass `confirm: true` — the tool descriptions
   instruct agents to ask the user first.
-- **CLI**: interactive `[y/N]` prompt; only an explicit yes proceeds.
+- **CLI**: interactive `[y/N]` prompt; only an explicit yes proceeds. A
+  batch is one prompt, and it names the count and the destination.
 - **Semantics**: both are soft moves. Dir backend files into
   `.archive`/`.trash` sub-maildirs; IMAP copies into Archive/Trash and
   marks the original seen — deliberately not `MOVE`, which expunges.
@@ -470,8 +499,11 @@ briefkasten
 Ids are message UIDs. `email.list` is `UID SEARCH UNSEEN` / `SEEN` /
 `ALL` depending on `scope`,
 `email.fetch` reads `BODY.PEEK[]` (fetching never sets `\Seen`), and
-`email.mark_seen` stores `+FLAGS \Seen`. Each call dials a fresh
-connection — no state to lose across server restarts or idle timeouts.
+`email.mark_seen` stores `+FLAGS \Seen`. One authenticated connection is
+reused across calls — validated before each use, closed on any error, and
+re-dialled when the server drops it, so there is still no state to lose
+across restarts or idle timeouts. A batch (`ids`) issues one `COPY` and
+one `STORE` for the whole set rather than a round trip per message.
 Optional: `BRIEFKASTEN_IMAP_MAILBOX` (default `INBOX`),
 `BRIEFKASTEN_IMAP_INSECURE=1` for plaintext IMAP (local/testing only).
 

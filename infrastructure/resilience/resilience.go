@@ -139,6 +139,46 @@ func (r *Mailbox) MarkSeen(ctx context.Context, id string) error {
 	return err
 }
 
+// MarkSeenMany acknowledges a batch through the resilience pipeline.
+// The whole batch is one call through the pipeline, which is the point:
+// it is one backend operation, so it gets one timeout and counts once
+// towards the breaker rather than a hundred times.
+func (r *Mailbox) MarkSeenMany(ctx context.Context, ids []string) (domain.BulkResult, error) {
+	return r.bulk(ctx, func(ctx context.Context) (domain.BulkResult, error) {
+		return markSeenManyFallback(ctx, r.mb, ids)
+	})
+}
+
+// ArchiveMany archives a batch through the resilience pipeline. Without
+// this forward the wrapped backend's native batching would be invisible
+// and every batch would cost one round of commands per message.
+func (r *Mailbox) ArchiveMany(ctx context.Context, ids []string) (domain.BulkResult, error) {
+	return r.bulk(ctx, func(ctx context.Context) (domain.BulkResult, error) {
+		return curateManyFallback(ctx, r.mb, ids, false)
+	})
+}
+
+// DeleteMany trashes a batch through the resilience pipeline.
+func (r *Mailbox) DeleteMany(ctx context.Context, ids []string) (domain.BulkResult, error) {
+	return r.bulk(ctx, func(ctx context.Context) (domain.BulkResult, error) {
+		return curateManyFallback(ctx, r.mb, ids, true)
+	})
+}
+
+// bulk runs a bulk operation through the pipeline. Per-id failures ride
+// along inside the result and so are never retried — they are the
+// caller's bad ids, not a backend fault, exactly as domain.ErrBadID is
+// treated for a single message.
+func (r *Mailbox) bulk(
+	ctx context.Context, fn func(context.Context) (domain.BulkResult, error),
+) (domain.BulkResult, error) {
+	v, err := r.execute(ctx, func(ctx context.Context) (any, error) { return fn(ctx) })
+	if err != nil {
+		return domain.BulkResult{}, err
+	}
+	return v.(domain.BulkResult), nil
+}
+
 // List lists a scope through the resilience pipeline.
 func (r *Mailbox) List(ctx context.Context, scope domain.Scope) ([]string, error) {
 	v, err := r.execute(ctx, func(ctx context.Context) (any, error) { return listFallback(ctx, r.mb, scope) })
@@ -237,6 +277,8 @@ var (
 	_ domain.ScopedSearcher    = (*Mailbox)(nil)
 	_ domain.FolderMailbox     = (*Mailbox)(nil)
 	_ domain.Curator           = (*Mailbox)(nil)
+	_ domain.BulkMailbox       = (*Mailbox)(nil)
+	_ domain.BulkCurator       = (*Mailbox)(nil)
 )
 
 // listFallback mirrors the application-layer scoped-list fallback for
@@ -249,6 +291,60 @@ func listFallback(ctx context.Context, mb domain.Mailbox, scope domain.Scope) ([
 		return nil, fmt.Errorf("briefkasten: backend lists unread mail only, scope %q unsupported", string(scope))
 	}
 	return mb.ListUnread(ctx)
+}
+
+// markSeenManyFallback mirrors the application-layer bulk fallback:
+// native batching when the backend has it, one call per id otherwise.
+func markSeenManyFallback(ctx context.Context, mb domain.Mailbox, ids []string) (domain.BulkResult, error) {
+	if err := domain.CheckBulkIDs(ids); err != nil {
+		return domain.BulkResult{}, err
+	}
+	if bm, ok := mb.(domain.BulkMailbox); ok {
+		return bm.MarkSeenMany(ctx, ids)
+	}
+	return bulkEachFallback(ctx, ids, mb.MarkSeen)
+}
+
+// curateManyFallback mirrors the application-layer bulk curation
+// fallback. trash selects delete over archive.
+func curateManyFallback(ctx context.Context, mb domain.Mailbox, ids []string, trash bool) (domain.BulkResult, error) {
+	if err := domain.CheckBulkIDs(ids); err != nil {
+		return domain.BulkResult{}, err
+	}
+	if bc, ok := mb.(domain.BulkCurator); ok {
+		if trash {
+			return bc.DeleteMany(ctx, ids)
+		}
+		return bc.ArchiveMany(ctx, ids)
+	}
+	cu, ok := mb.(domain.Curator)
+	if !ok {
+		return domain.BulkResult{}, errors.New("briefkasten: backend has no curation support")
+	}
+	if trash {
+		return bulkEachFallback(ctx, ids, cu.Delete)
+	}
+	return bulkEachFallback(ctx, ids, cu.Archive)
+}
+
+// bulkEachFallback loops a single-message operation over a batch,
+// collecting an outcome per id. One bad id fails alone; a caller that
+// walked away stops the loop.
+func bulkEachFallback(
+	ctx context.Context, ids []string, op func(context.Context, string) error,
+) (domain.BulkResult, error) {
+	res := domain.NewBulkResult(len(ids))
+	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			return res, err
+		}
+		if err := op(ctx, id); err != nil {
+			res.Fail(id, err)
+			continue
+		}
+		res.Succeed(id)
+	}
+	return res, nil
 }
 
 // searchFallback mirrors the application-layer search fallback for the
