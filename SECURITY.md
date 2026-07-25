@@ -26,11 +26,11 @@ retyping, and your credit travels with it.
 
 **Fallback — email.** If you cannot use GitHub advisories, write to:
 
-> `PLACEHOLDER-SECURITY-CONTACT@example.invalid`
+> felix@felixgeelhaar.de
 >
-> **Maintainer: replace this placeholder with a monitored address.**
-> Until then, `.invalid` is deliberately undeliverable rather than a
-> plausible-looking address that silently drops reports.
+> Please put `briefkasten security` in the subject so it is not lost in
+> ordinary mail. Encrypted mail is welcome if you prefer; say so in a
+> first message and a key will be arranged.
 
 **Fallback without either.** Open a public issue that contains *no
 details* — one line, "I have a security report for briefkasten, please
