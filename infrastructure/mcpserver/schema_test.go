@@ -17,18 +17,25 @@ func TestToolInputSchemasMarkRequiredFields(t *testing.T) {
 	}
 
 	wantRequired := map[string][]string{
-		"email.fetch":     {"id"},
-		"email.mark_seen": {"id"},
-		"email.search":    {"query"},
-		"email.archive":   {"id"},
-		"email.delete":    {"id"},
+		"email.fetch":  {"id"},
+		"email.search": {"query"},
+	}
+	// The batch-taking tools cannot mark either field required: exactly
+	// one of id and ids must be given, which the schema dialect the
+	// builder emits cannot express. Both must still be declared and
+	// described, and the handler enforces the exclusivity.
+	wantOptional := map[string][]string{
+		"email.mark_seen": {"id", "ids"},
+		"email.archive":   {"id", "ids"},
+		"email.delete":    {"id", "ids"},
 	}
 
 	seen := map[string]bool{}
 	for _, tool := range tools {
 		name := tool["name"].(string)
 		want, ok := wantRequired[name]
-		if !ok {
+		optional, alsoOK := wantOptional[name]
+		if !ok && !alsoOK {
 			continue
 		}
 		seen[name] = true
@@ -58,6 +65,11 @@ func TestToolInputSchemasMarkRequiredFields(t *testing.T) {
 			t.Errorf("%s: no properties", name)
 			continue
 		}
+		for _, field := range optional {
+			if _, declared := props[field]; !declared {
+				t.Errorf("%s: field %q not declared (got %v)", name, field, props)
+			}
+		}
 		for fname, p := range props {
 			prop, ok := p.(map[string]any)
 			if !ok || prop["description"] == "" || prop["description"] == nil {
@@ -65,9 +77,11 @@ func TestToolInputSchemasMarkRequiredFields(t *testing.T) {
 			}
 		}
 	}
-	for name := range wantRequired {
-		if !seen[name] {
-			t.Errorf("tool %s not listed", name)
+	for _, want := range []map[string][]string{wantRequired, wantOptional} {
+		for name := range want {
+			if !seen[name] {
+				t.Errorf("tool %s not listed", name)
+			}
 		}
 	}
 }

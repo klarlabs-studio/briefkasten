@@ -499,6 +499,123 @@ func (m *Mailbox) MarkSeen(ctx context.Context, id string) error {
 	})
 }
 
+// MarkSeenMany marks a whole set of UIDs seen with one FETCH and one
+// STORE, whatever the size of the set. Same invariants as MarkSeen: an
+// id the mailbox does not hold is never claimed as marked, and marking
+// an already-seen message succeeds unchanged.
+func (m *Mailbox) MarkSeenMany(ctx context.Context, ids []string) (domain.BulkResult, error) {
+	if err := domain.CheckBulkIDs(ids); err != nil {
+		return domain.BulkResult{}, err
+	}
+	res, known := splitParsable(ids)
+	if len(known) == 0 {
+		return res, nil
+	}
+
+	err := m.withConn(ctx, func(c *imapclient.Client) error {
+		present, err := locateMany(ctx, c, &res, known)
+		if err != nil {
+			return err
+		}
+		if len(present) == 0 {
+			return nil
+		}
+		return storeSeen(ctx, c, &res, present)
+	})
+	if err != nil {
+		return domain.BulkResult{}, err
+	}
+	return res, nil
+}
+
+var _ domain.BulkMailbox = (*Mailbox)(nil)
+
+// uidRef pairs a parsed UID with the id string the caller used, so every
+// outcome can be reported under the id that was passed in.
+type uidRef struct {
+	id  string
+	uid imap.UID
+}
+
+// splitParsable separates the ids that are UIDs at all from the ones
+// that are not. A malformed id is the caller's mistake and is answered
+// without spending a round trip on it — but it is answered per id, not
+// by refusing the batch.
+func splitParsable(ids []string) (domain.BulkResult, []uidRef) {
+	res := domain.NewBulkResult(len(ids))
+	refs := make([]uidRef, 0, len(ids))
+	for _, id := range ids {
+		uid, err := parseUID(id)
+		if err != nil {
+			res.Fail(id, err)
+			continue
+		}
+		refs = append(refs, uidRef{id: id, uid: uid})
+	}
+	return res, refs
+}
+
+// uidSetOf builds the one UID set that carries the whole batch. This is
+// the saving: imap.UIDSetNum is variadic, so a COPY or a STORE over
+// fifty messages is one command and one round trip rather than fifty.
+func uidSetOf(refs []uidRef) imap.UIDSet {
+	uids := make([]imap.UID, len(refs))
+	for i, r := range refs {
+		uids[i] = r.uid
+	}
+	return imap.UIDSetNum(uids...)
+}
+
+// locateMany verifies the whole batch's existence in a single FETCH and
+// records every absent id as its own failure.
+//
+// The check is the same one MarkSeen and fileTo make for a single
+// message, and it exists for the same reason: a server answers OK to a
+// COPY or a STORE of a UID it does not hold, so without it a batch would
+// report moves that never happened. In bulk it matters more, not less —
+// a stale id must cost its own entry in the report, never the batch.
+func locateMany(
+	ctx context.Context, c *imapclient.Client, res *domain.BulkResult, refs []uidRef,
+) ([]uidRef, error) {
+	what := fmt.Sprintf("locate %d ids", len(refs))
+	found, err := awaitValue(ctx, c, what,
+		c.Fetch(uidSetOf(refs), &imap.FetchOptions{UID: true}).Collect, cmdTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("imap: %s: %w", what, err)
+	}
+	held := make(map[imap.UID]struct{}, len(found))
+	for _, msg := range found {
+		held[msg.UID] = struct{}{}
+	}
+
+	present := make([]uidRef, 0, len(refs))
+	for _, r := range refs {
+		if _, ok := held[r.uid]; !ok {
+			res.Fail(r.id, fmt.Errorf("%w: %s", domain.ErrBadID, r.id))
+			continue
+		}
+		present = append(present, r)
+	}
+	return present, nil
+}
+
+// storeSeen marks the whole set seen in one STORE and records each id as
+// succeeded.
+func storeSeen(
+	ctx context.Context, c *imapclient.Client, res *domain.BulkResult, refs []uidRef,
+) error {
+	what := fmt.Sprintf("mark seen %d ids", len(refs))
+	if err := await(ctx, c, what, c.Store(uidSetOf(refs), &imap.StoreFlags{
+		Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagSeen},
+	}, nil).Close, cmdTimeout); err != nil {
+		return fmt.Errorf("imap: %s: %w", what, err)
+	}
+	for _, r := range refs {
+		res.Succeed(r.id)
+	}
+	return nil
+}
+
 // curationTarget names one destination for a soft move, in the three
 // ways a server might describe it: what the operator pinned, what the
 // server declares via RFC 6154 SPECIAL-USE, and the conventional leaf
@@ -717,6 +834,73 @@ func (m *Mailbox) fileTo(ctx context.Context, t curationTarget, id string) error
 		return nil
 	})
 }
+
+// fileManyTo is fileTo for a whole batch, and costs what one message
+// costs: the destination is resolved once, the set's existence is
+// checked in one FETCH, and the set is carried by one COPY and one
+// STORE. Fifty single moves are ~250 round trips — enough to meet a
+// provider's rate limit; fifty in one batch are five.
+//
+// The split between the two ways a batch can fail is deliberate. An id
+// this call can attribute — unparseable, or absent from the mailbox —
+// becomes that id's own failure and leaves the rest of the batch alone.
+// A command that fails outright fails the call: nothing distinguishes
+// which messages a broken COPY did or did not touch, so guessing per id
+// would invent a report, and the resilience decorator needs to see a
+// backend fault as a fault rather than as a hundred quiet outcomes.
+//
+// Nothing is undone when a batch partly fails. Soft moves are not
+// reversible by us — "un-copying" by deleting the copy is more dangerous
+// than an honest report of what landed where.
+func (m *Mailbox) fileManyTo(ctx context.Context, t curationTarget, ids []string) (domain.BulkResult, error) {
+	if err := domain.CheckBulkIDs(ids); err != nil {
+		return domain.BulkResult{}, err
+	}
+	res, known := splitParsable(ids)
+	if len(known) == 0 {
+		return res, nil
+	}
+
+	err := m.withConn(ctx, func(c *imapclient.Client) error {
+		// Once for the batch: this is the LIST + NAMESPACE pair that the
+		// per-message path pays for every single message.
+		folder, err := m.resolveCurationFolder(ctx, c, t)
+		if err != nil {
+			return err
+		}
+		present, err := locateMany(ctx, c, &res, known)
+		if err != nil {
+			return err
+		}
+		if len(present) == 0 {
+			return nil
+		}
+
+		what := fmt.Sprintf("copy %d ids to %s", len(present), folder)
+		if _, err := awaitValue(ctx, c, what, c.Copy(uidSetOf(present), folder).Wait, cmdTimeout); err != nil {
+			return fmt.Errorf("imap: %s: %w", what, err)
+		}
+		return storeSeen(ctx, c, &res, present)
+	})
+	if err != nil {
+		return domain.BulkResult{}, err
+	}
+	return res, nil
+}
+
+// ArchiveMany archives a whole batch in one round of commands. See
+// fileManyTo for how partial failure is reported.
+func (m *Mailbox) ArchiveMany(ctx context.Context, ids []string) (domain.BulkResult, error) {
+	return m.fileManyTo(ctx, m.archiveTarget(), ids)
+}
+
+// DeleteMany trashes a whole batch in one round of commands — soft, like
+// Delete; nothing is expunged.
+func (m *Mailbox) DeleteMany(ctx context.Context, ids []string) (domain.BulkResult, error) {
+	return m.fileManyTo(ctx, m.trashTarget(), ids)
+}
+
+var _ domain.BulkCurator = (*Mailbox)(nil)
 
 // Archive files the message into the server's archive folder; the
 // original is marked seen, never expunged. The destination is whatever

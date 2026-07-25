@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -108,16 +109,25 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, string(raw))
 
 	case "seen":
-		id := fs.Arg(0)
-		if id == "" {
-			fmt.Fprintln(stderr, "usage: briefkasten seen <id>")
+		ids := fs.Args()
+		if len(ids) == 0 {
+			fmt.Fprintln(stderr, "usage: briefkasten seen <id> [id ...]")
 			return 2
 		}
-		if err := svc.MarkSeen(ctx, *account, *folder, id); err != nil {
+		if len(ids) == 1 {
+			if err := svc.MarkSeen(ctx, *account, *folder, ids[0]); err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			emit("seen: "+ids[0], map[string]any{"ok": true, "id": ids[0]})
+			break
+		}
+		res, err := svc.MarkSeenMany(ctx, *account, *folder, ids)
+		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		emit("seen: "+id, map[string]any{"ok": true, "id": id})
+		return reportBulk(stdout, stderr, *asJSON, "seen", res)
 
 	case "search":
 		query := fs.Arg(0)
@@ -287,26 +297,41 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		emit(hash.String(), map[string]any{"password_hash": hash.String()})
 
 	case "archive", "delete":
-		id := fs.Arg(0)
-		if id == "" {
-			fmt.Fprintf(stderr, "usage: briefkasten %s <id>\n", cmd)
+		ids := fs.Args()
+		if len(ids) == 0 {
+			fmt.Fprintf(stderr, "usage: briefkasten %s <id> [id ...]\n", cmd)
 			return 2
 		}
 		// HITL stays at the interface; the shared use case runs after
 		// the human said yes — exactly like the MCP elicitation gate.
-		if !*yes && !confirmPrompt(stdin, stdout, cmd, id) {
+		// One prompt covers the batch, so it has to state what the batch
+		// is: how many messages and where they are about to go.
+		if !*yes && !confirmPrompt(stdin, stdout, cmd, ids, curationDest(ctx, svc, *account, *folder, cmd)) {
 			emit("aborted", map[string]any{"ok": false, "aborted": true})
 			return 1
 		}
-		op := svc.Archive
-		if cmd == "delete" {
-			op = svc.Delete
+		if len(ids) == 1 {
+			op := svc.Archive
+			if cmd == "delete" {
+				op = svc.Delete
+			}
+			if err := op(ctx, *account, *folder, ids[0]); err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			emit(cmd+"d: "+ids[0], map[string]any{"ok": true, "id": ids[0]})
+			break
 		}
-		if err := op(ctx, *account, *folder, id); err != nil {
+		op := svc.ArchiveMany
+		if cmd == "delete" {
+			op = svc.DeleteMany
+		}
+		res, err := op(ctx, *account, *folder, ids)
+		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		emit(cmd+"d: "+id, map[string]any{"ok": true, "id": id})
+		return reportBulk(stdout, stderr, *asJSON, cmd+"d", res)
 
 	default:
 		fmt.Fprintf(stderr, `unknown command %q
@@ -330,9 +355,14 @@ read, seen, archive, and delete take an id from any scope: a message that
 was processed long ago acts exactly like one still in the backlog. seen
 is idempotent — re-acknowledging read mail is not an error.
 
+seen, archive, and delete take several ids at once (max %d), and report
+per id: what moved is listed, what did not is named with its reason, and
+nothing is rolled back. A batch that partly failed exits non-zero.
+
 Curation is soft: archive files away, delete moves to trash — nothing is
-ever expunged. Both prompt for confirmation unless --yes.
-`, cmd)
+ever expunged. Both prompt once for confirmation unless --yes; for a
+batch the prompt names the count and the destination folder.
+`, cmd, briefkasten.MaxBulkIDs)
 		return 2
 	}
 	return 0
@@ -396,12 +426,71 @@ func printVersion(stdout io.Writer, asJSON bool) {
 	fmt.Fprintf(stdout, "briefkasten %s (commit: %s, built: %s)\n", version, commit, date)
 }
 
-// confirmPrompt asks the human; only an explicit y/yes proceeds.
-func confirmPrompt(stdin io.Reader, stdout io.Writer, action, id string) bool {
-	fmt.Fprintf(stdout, "%s message %q? The message is moved, never destroyed. [y/N] ", action, id)
+// confirmPrompt asks the human; only an explicit y/yes proceeds. A batch
+// is authorised by that single answer, so the question names the blast
+// radius it covers: the count, the destination, and the ids themselves.
+func confirmPrompt(stdin io.Reader, stdout io.Writer, action string, ids []string, destination string) bool {
+	if len(ids) == 1 {
+		fmt.Fprintf(stdout, "%s message %q? %s [y/N] ", action, ids[0], movedWhere(destination, false))
+	} else {
+		fmt.Fprintf(stdout, "%s %d messages (%s)? %s [y/N] ",
+			action, len(ids), strings.Join(ids, ", "), movedWhere(destination, true))
+	}
 	line, _ := bufio.NewReader(stdin).ReadString('\n')
 	answer := strings.ToLower(strings.TrimSpace(line))
 	return answer == "y" || answer == "yes"
+}
+
+// movedWhere phrases the reassurance the prompt ends on, naming the
+// destination when the backend could report one.
+func movedWhere(destination string, plural bool) string {
+	subject, verb := "The message is", "It will"
+	if plural {
+		subject, verb = "The messages are", "They will"
+	}
+	if destination == "" {
+		return subject + " moved, never destroyed."
+	}
+	return fmt.Sprintf("%s be filed into %q — moved, never destroyed.", verb, destination)
+}
+
+// curationDest reports where this curation would file, for the prompt.
+// Best-effort: a backend that cannot answer must not block the command,
+// and the prompt simply falls back to the destination-less wording.
+func curationDest(ctx context.Context, svc *briefkasten.Service, account, folder, action string) string {
+	plan, err := svc.CurationPlan(ctx, account, folder)
+	if err != nil {
+		return ""
+	}
+	if action == "archive" {
+		return plan.Archive.Folder
+	}
+	return plan.Trash.Folder
+}
+
+// reportBulk prints a per-id outcome and sets the exit status from it. A
+// batch that partly failed exits non-zero: the successes are named, but
+// a script must not read "some of it worked" as success.
+func reportBulk(stdout, stderr io.Writer, asJSON bool, verb string, res briefkasten.BulkResult) int {
+	if asJSON {
+		raw, _ := json.MarshalIndent(map[string]any{
+			verb:     res.Succeeded,
+			"failed": res.Failed,
+			"total":  len(res.Succeeded) + len(res.Failed),
+		}, "", "  ")
+		fmt.Fprintln(stdout, string(raw))
+	} else {
+		for _, id := range res.Succeeded {
+			fmt.Fprintf(stdout, "%s: %s\n", verb, id)
+		}
+		for _, f := range res.Failed {
+			fmt.Fprintf(stderr, "failed: %s (%v)\n", f.ID, f.Err)
+		}
+	}
+	if len(res.Failed) > 0 {
+		return 1
+	}
+	return 0
 }
 
 func loadConfigPath(explicit string) (*briefkasten.Config, error) {

@@ -155,7 +155,7 @@ func TestConfirmationPromptNamesDestination(t *testing.T) {
 	sender := &fakeElicitSender{action: "accept"}
 	ctx := elicitCtx(t, sender)
 
-	if err := confirmCuration(ctx, false, "delete", "m1.eml", "INBOX.Trash"); err != nil {
+	if err := confirmCuration(ctx, false, "delete", []string{"m1.eml"}, "INBOX.Trash"); err != nil {
 		t.Fatalf("confirmCuration: %v", err)
 	}
 	if !strings.Contains(sender.prompt, "INBOX.Trash") {
@@ -171,7 +171,7 @@ func TestConfirmationPromptWithoutDestination(t *testing.T) {
 	sender := &fakeElicitSender{action: "accept"}
 	ctx := elicitCtx(t, sender)
 
-	if err := confirmCuration(ctx, false, "archive", "m1.eml", ""); err != nil {
+	if err := confirmCuration(ctx, false, "archive", []string{"m1.eml"}, ""); err != nil {
 		t.Fatalf("confirmCuration: %v", err)
 	}
 	if !strings.Contains(sender.prompt, "never destroyed") {

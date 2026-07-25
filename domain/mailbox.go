@@ -6,6 +6,7 @@ package domain
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -126,6 +127,133 @@ type Curator interface {
 	Archive(ctx context.Context, id string) error
 	// Delete moves a message — read or unread — to the trash.
 	Delete(ctx context.Context, id string) error
+}
+
+// MaxBulkIDs caps how many messages one bulk call may act on.
+//
+// A batch is authorised by a single human gesture, so the cap is what
+// bounds the blast radius of that one "yes": a confirmation covering a
+// hundred messages is still something a person can weigh, one covering
+// ten thousand is not. It also keeps a batch small enough that the
+// per-id report stays readable and one IMAP command set stays within
+// what servers accept.
+const MaxBulkIDs = 100
+
+// ErrBulkSize rejects a batch that is empty, over MaxBulkIDs, or repeats
+// an id.
+var ErrBulkSize = errors.New("briefkasten: invalid batch")
+
+// CheckBulkIDs validates a batch before any of it runs. It is deliberate
+// that the whole call is refused rather than trimmed: a caller that
+// exceeded the cap enumerated more mail than it was allowed to curate at
+// once, and silently acting on the first hundred would be a different
+// operation from the one it asked for.
+//
+// Duplicates are refused for the same reason the result is keyed by id —
+// an id appearing twice would make its outcome ambiguous.
+func CheckBulkIDs(ids []string) error {
+	if len(ids) == 0 {
+		return fmt.Errorf("%w: no ids given (want 1 to %d)", ErrBulkSize, MaxBulkIDs)
+	}
+	if len(ids) > MaxBulkIDs {
+		return fmt.Errorf("%w: %d ids exceeds the %d-id cap for one call — split the batch",
+			ErrBulkSize, len(ids), MaxBulkIDs)
+	}
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if _, dup := seen[id]; dup {
+			return fmt.Errorf("%w: id %q appears more than once", ErrBulkSize, id)
+		}
+		seen[id] = struct{}{}
+	}
+	return nil
+}
+
+// BulkFailure is one id a bulk operation could not act on, with the
+// reason it failed. The error is kept whole rather than flattened to a
+// string so callers can still test it — errors.Is(f.Err, ErrBadID)
+// distinguishes an id the mailbox does not hold from a backend fault.
+type BulkFailure struct {
+	ID  string
+	Err error
+}
+
+// MarshalJSON renders a failure as {"id":…,"error":…}: an error value has
+// no useful JSON form of its own, and the message is what a human or an
+// agent reads.
+func (f BulkFailure) MarshalJSON() ([]byte, error) {
+	msg := ""
+	if f.Err != nil {
+		msg = f.Err.Error()
+	}
+	return json.Marshal(struct {
+		ID    string `json:"id"`
+		Error string `json:"error"`
+	}{ID: f.ID, Error: msg})
+}
+
+// BulkResult reports a bulk operation id by id.
+//
+// There is no transaction behind a batch: nothing rolls back, and one
+// unusable id must not sink the rest. So the outcome is never a single
+// ok — every id lands in exactly one of the two lists, and a caller can
+// tell precisely what moved and what did not. Reporting blanket success
+// for a batch that partly failed would be the same lie as reporting a
+// soft move a server never performed.
+type BulkResult struct {
+	Succeeded []string      `json:"succeeded"`
+	Failed    []BulkFailure `json:"failed"`
+}
+
+// NewBulkResult prepares a result sized for a batch. Both lists start
+// non-nil so an empty one renders as [] rather than null — "nothing
+// failed" must not be indistinguishable from "no report".
+func NewBulkResult(size int) BulkResult {
+	return BulkResult{Succeeded: make([]string, 0, size), Failed: make([]BulkFailure, 0)}
+}
+
+// Succeed records an id the operation acted on.
+func (r *BulkResult) Succeed(id string) { r.Succeeded = append(r.Succeeded, id) }
+
+// Fail records an id the operation could not act on, and why.
+func (r *BulkResult) Fail(id string, err error) {
+	r.Failed = append(r.Failed, BulkFailure{ID: id, Err: err})
+}
+
+// BulkMailbox is an optional Mailbox capability: acknowledging many
+// messages in one call. Backends that gain nothing from batching simply
+// do not implement it and are looped over instead — the saving is round
+// trips to a remote server, which local file operations do not pay.
+//
+// Like Mailbox, it honours its context, and bulk mark-seen keeps
+// MarkSeen's idempotence: ids already seen succeed and change nothing.
+type BulkMailbox interface {
+	// MarkSeenMany marks each id seen and reports the outcome per id.
+	// The error is reserved for a failure of the batch as a whole — an
+	// invalid batch, or a backend that could not be reached at all.
+	MarkSeenMany(ctx context.Context, ids []string) (BulkResult, error)
+}
+
+// BulkCurator is an optional Curator capability: curating many messages
+// in one call, for backends where a batch costs less than the messages
+// in it. On IMAP a single-message soft move costs a folder resolution, an
+// existence check, a COPY and a STORE; fifty of them is enough to hit a
+// provider's rate limit, while one batch is one of each.
+//
+// Both operations take explicit ids and only explicit ids. There is
+// deliberately no predicate or query form: message content reaches every
+// tool, so a bulk-by-query delete would let one injected sentence in an
+// email body destroy an unbounded amount of mail. The caller passes a
+// list it already enumerated and can be held to.
+//
+// Like Curator, both are soft moves, both honour their context, and
+// neither rolls anything back — a partial batch is reported precisely,
+// not undone.
+type BulkCurator interface {
+	// ArchiveMany archives each id and reports the outcome per id.
+	ArchiveMany(ctx context.Context, ids []string) (BulkResult, error)
+	// DeleteMany trashes each id and reports the outcome per id.
+	DeleteMany(ctx context.Context, ids []string) (BulkResult, error)
 }
 
 // CurationRoute names how a curation destination was decided. It exists

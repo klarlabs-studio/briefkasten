@@ -54,6 +54,11 @@ func (s *Switchable) MarkSeen(ctx context.Context, id string) error {
 	return s.current().MarkSeen(ctx, id)
 }
 
+// MarkSeenMany forwards to the backend's BulkMailbox, or loops.
+func (s *Switchable) MarkSeenMany(ctx context.Context, ids []string) (domain.BulkResult, error) {
+	return markSeenMany(ctx, s.current(), ids)
+}
+
 // Search forwards to the backend's Searcher or the generic fallback.
 func (s *Switchable) Search(ctx context.Context, query string) ([]string, error) {
 	return searchMailbox(ctx, s.current(), domain.ScopeUnread, query)
@@ -101,6 +106,19 @@ func (s *Switchable) Delete(ctx context.Context, id string) error {
 	return cu.Delete(ctx, id)
 }
 
+// ArchiveMany forwards to the backend's BulkCurator, or loops over its
+// Curator. Without the forward the capability would vanish behind this
+// decorator and every batch would silently fall back to one call per id.
+func (s *Switchable) ArchiveMany(ctx context.Context, ids []string) (domain.BulkResult, error) {
+	return curateMany(ctx, s.current(), ids, actionArchive)
+}
+
+// DeleteMany forwards to the backend's BulkCurator, or loops over its
+// Curator.
+func (s *Switchable) DeleteMany(ctx context.Context, ids []string) (domain.BulkResult, error) {
+	return curateMany(ctx, s.current(), ids, actionDelete)
+}
+
 // CurationPlan forwards to the backend's inspector. The destinations
 // belong to whichever backend is current, so a runtime swap changes the
 // answer — which is exactly why it is asked rather than remembered.
@@ -120,4 +138,6 @@ var (
 	_ domain.FolderMailbox     = (*Switchable)(nil)
 	_ domain.Curator           = (*Switchable)(nil)
 	_ domain.CurationInspector = (*Switchable)(nil)
+	_ domain.BulkMailbox       = (*Switchable)(nil)
+	_ domain.BulkCurator       = (*Switchable)(nil)
 )

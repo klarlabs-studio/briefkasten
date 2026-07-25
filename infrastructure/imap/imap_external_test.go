@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 
@@ -25,11 +26,79 @@ type literal struct {
 
 func (l literal) Size() int64 { return l.size }
 
-// countingListener records how many connections a server accepted and
-// can sever the live ones, so a test can tell a reused connection from a
-// fresh dial and can play the server that drops an idle session.
+// commandCounter tallies the IMAP commands clients send, so a test can
+// assert what an operation costs in round trips rather than only that it
+// worked. Batching is invisible in the result — the mail lands either
+// way — and is only observable here.
+type commandCounter struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func newCommandCounter() *commandCounter { return &commandCounter{counts: map[string]int{}} }
+
+// observe records one command line ("<tag> UID COPY 1:5 Trash").
+func (c *commandCounter) observe(line string) {
+	fields := strings.Fields(line)
+	if len(fields) < 2 {
+		return
+	}
+	name := strings.ToUpper(fields[1])
+	if name == "UID" && len(fields) >= 3 {
+		name += " " + strings.ToUpper(fields[2])
+	}
+	c.mu.Lock()
+	c.counts[name]++
+	c.mu.Unlock()
+}
+
+func (c *commandCounter) count(name string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.counts[name]
+}
+
+// reset zeroes the tally so a test can measure one operation rather than
+// everything the connection has done since it was dialled.
+func (c *commandCounter) reset() {
+	c.mu.Lock()
+	c.counts = map[string]int{}
+	c.mu.Unlock()
+}
+
+// countingConn tallies the command lines a client sends. Each connection
+// has its own line buffer — the server reads it from one goroutine — and
+// only the shared tally is locked.
+type countingConn struct {
+	net.Conn
+	counter *commandCounter
+	pending []byte
+}
+
+func (c *countingConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if n > 0 {
+		c.pending = append(c.pending, p[:n]...)
+		for {
+			i := bytes.IndexByte(c.pending, '\n')
+			if i < 0 {
+				break
+			}
+			c.counter.observe(string(bytes.TrimRight(c.pending[:i], "\r")))
+			c.pending = c.pending[i+1:]
+		}
+	}
+	return n, err
+}
+
+// countingListener records how many connections a server accepted, what
+// commands arrived on them, and can sever the live ones, so a test can
+// tell a reused connection from a fresh dial and can play the server
+// that drops an idle session.
 type countingListener struct {
 	net.Listener
+
+	commands *commandCounter
 
 	mu    sync.Mutex
 	dials int
@@ -41,11 +110,12 @@ func (l *countingListener) Accept() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	counted := &countingConn{Conn: conn, counter: l.commands}
 	l.mu.Lock()
 	l.dials++
-	l.conns = append(l.conns, conn)
+	l.conns = append(l.conns, counted)
 	l.mu.Unlock()
-	return conn, nil
+	return counted, nil
 }
 
 func (l *countingListener) accepted() int {
@@ -83,6 +153,14 @@ func startIMAPServer(t *testing.T, extraMailboxes ...string) string {
 // startCountedIMAPServer is startIMAPServer with the listener exposed.
 func startCountedIMAPServer(t *testing.T, extraMailboxes ...string) (string, *countingListener) {
 	t.Helper()
+	return startSeededIMAPServer(t, 1, extraMailboxes...)
+}
+
+// startSeededIMAPServer runs the in-memory server with messages unseen
+// messages in INBOX — the shape a bulk test needs, where one message
+// cannot show whether a batch was batched.
+func startSeededIMAPServer(t *testing.T, messages int, extraMailboxes ...string) (string, *countingListener) {
+	t.Helper()
 
 	user := imapmemserver.NewUser("alice", "secret")
 	if err := user.Create("INBOX", nil); err != nil {
@@ -94,8 +172,10 @@ func startCountedIMAPServer(t *testing.T, extraMailboxes ...string) (string, *co
 		}
 	}
 	raw := []byte(testMessage)
-	if _, err := user.Append("INBOX", literal{bytes.NewReader(raw), int64(len(raw))}, &imap.AppendOptions{}); err != nil {
-		t.Fatal(err)
+	for range messages {
+		if _, err := user.Append("INBOX", literal{bytes.NewReader(raw), int64(len(raw))}, &imap.AppendOptions{}); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	mem := imapmemserver.New()
@@ -111,7 +191,7 @@ func startCountedIMAPServer(t *testing.T, extraMailboxes ...string) (string, *co
 	if err != nil {
 		t.Fatal(err)
 	}
-	ln := &countingListener{Listener: base}
+	ln := &countingListener{Listener: base, commands: newCommandCounter()}
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })
 

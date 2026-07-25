@@ -22,7 +22,7 @@ func TestConfirmPrompt(t *testing.T) {
 	}
 	for _, tc := range cases {
 		var out bytes.Buffer
-		got := confirmPrompt(strings.NewReader(tc.input), &out, "delete", "m1.eml")
+		got := confirmPrompt(strings.NewReader(tc.input), &out, "delete", []string{"m1.eml"}, "")
 		if got != tc.want {
 			t.Errorf("confirmPrompt(%q) = %v, want %v", tc.input, got, tc.want)
 		}

@@ -77,3 +77,9 @@ func callMap(t *testing.T, client *testutil.TestClient, name string, args map[st
 	}
 	return out
 }
+
+// newServiceOver wires the shared service over a backend, for tests that
+// call an adapter helper directly rather than through a client.
+func newServiceOver(mb domain.Mailbox) *application.Service {
+	return application.NewService(mb, nil)
+}
