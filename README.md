@@ -11,7 +11,7 @@ contract instead of binding to IMAP libraries:
 |---|---|
 | `email.list` | `{"scope?": "unread\|read\|all", "limit?"}` → `{"ids": ["..."], "total": N, "scope": "unread"}` — `scope` defaults to `unread` |
 | `email.list_unread` | `{"limit?"}` → `{"ids": ["..."], "total": N}` — `email.list` with `scope=unread` |
-| `email.fetch` | `{"id": "..."}` → `{"raw": "<base64 RFC 5322>"}` — read or unread; never sets `\Seen` |
+| `email.fetch` | `{"id"}` → `{"raw": "<base64 RFC 5322>"}`, or `{"ids": [...]}` → `{"fetched": [{"id", "raw"}], "failed": [...], "total": N}` — read or unread; never sets `\Seen`; a batch is refused whole if it measures over 25 MiB |
 | `email.mark_seen` | `{"id"}` → `{"ok": true}`, or `{"ids": [...]}` → `{"marked": [...], "failed": [...], "total": N}` — message won't be listed again; idempotent, so re-acknowledging read mail is not an error |
 | `email.send`* | `{"to": [...], "subject", "body", "html_body?", "attachments?": [{"filename", "content_type", "content": "<base64>"}]}` → `{"id", "state": "queued"}` — attachments ≤ 10 MiB each, ≤ 25 MiB per message |
 | `email.send_status`* | `{"id"}` → `{"state": "queued\|sending\|sent\|failed", "attempts", "error?"}` |
@@ -28,16 +28,19 @@ always reports the full count.
 
 ### Bulk: many ids, one call
 
-`email.mark_seen`, `email.archive`, and `email.delete` take either `id`
-(one message) or `ids` (a batch of up to **100**) — exactly one of the
-two; both, or neither, is refused. On IMAP a batch costs what one
-message costs: the curation folder is resolved once, and one `UID FETCH`,
-one `UID COPY` and one `UID STORE` carry the whole set. Fifty deletes go
-from **301 commands to 7**. Backends that gain nothing from batching
-(the dir backend: local renames, no round trips) loop through a shared
-fallback and behave identically to the caller.
+`email.fetch`, `email.mark_seen`, `email.archive`, and `email.delete`
+take either `id` (one message) or `ids` (a batch of up to **100**) —
+exactly one of the two; both, or neither, is refused. On IMAP a batch
+costs what one message costs: the curation folder is resolved once, and
+one `UID FETCH`, one `UID COPY` and one `UID STORE` carry the whole set.
+Fifty deletes go from **301 commands to 7**; fifty fetches from **100
+commands to 3** — a connection probe, one `UID FETCH` to measure the
+whole set, one to carry every body.
+Backends that gain nothing from batching (the dir backend: local
+renames, no round trips) loop through a shared fallback and behave
+identically to the caller.
 
-Three properties are deliberate:
+Four properties are deliberate:
 
 - **Explicit ids only.** There is no predicate or "all matching" form.
   Message content reaches every tool, so a bulk-by-query delete would let
@@ -52,7 +55,19 @@ Three properties are deliberate:
 - **One confirmation, stating the blast radius.** The elicitation prompt
   names the count, the resolved destination folder and the ids —
   `Confirm delete of 3 messages? They will be filed into "INBOX.Trash" —
-  moved, never destroyed. Messages: a.eml, b.eml, c.eml.`
+  moved, never destroyed. Messages: a.eml, b.eml, c.eml.` (Curation
+  only: `email.fetch` is read-only and has no gate.)
+- **`email.fetch` is bounded by size, not just by count.** A hundred ids
+  is a fine blast radius for a soft move and a terrible one for a fetch:
+  a hundred messages with attachments is easily hundreds of megabytes,
+  enough to blow the client's context or its memory. So a batch is
+  measured *before* any body is read — one `UID FETCH RFC822.SIZE` on
+  IMAP, a `stat` per file on the dir backend — and refused whole if it
+  totals over **25 MiB**, the same ceiling `email.send` puts on one
+  outbound message. The refusal names the budget, the measured total and
+  the id count, so the caller can split and retry. Nothing is ever
+  truncated: a cut-off RFC 5322 message is corrupt data a consumer may
+  parse without noticing, and an error is the honest answer.
 
 ### Scope: read mail, not just unread
 
@@ -154,7 +169,7 @@ The same binary is a human client over the same mailbox:
 
 ```bash
 briefkasten list   [--scope unread|read|all] [--folder F] [--account A] [--json]
-briefkasten read   <id>
+briefkasten read   <id> [id ...]   # several ids: length-prefixed records
 briefkasten seen   <id> [id ...]
 briefkasten search <query> [--scope unread|read|all]
 briefkasten folders [--curation]   # --curation: where archive/delete would file
@@ -167,6 +182,30 @@ briefkasten delete  <id> [id ...]   # prompts y/N; soft delete — to trash
 briefkasten hashpw            # argon2id hash for auth.basic.password_hash
 briefkasten --version         # or `version`; --json adds toolchain + platform
 ```
+
+`read` with one id prints the message and nothing else, exactly as it
+always has. With several it length-prefixes each one, because no marker
+line can safely delimit mail — any delimiter can occur inside a message,
+and escaping mail is how a consumer ends up parsing something that is no
+longer the message:
+
+```
+id a.eml 42
+From: a@b.c
+Subject: A
+
+hallo
+id b.eml 41
+…
+```
+
+A reader takes the header line `id <id> <bytes>`, reads exactly that
+many bytes, and skips the trailing newline — nothing to unescape.
+`--json` gives the structured per-id form instead (`fetched` with `raw`
+base64-encoded, plus `failed`), which is also what a single id returns
+under `--json`. A batch measuring over 25 MiB is refused before anything
+is read, and a partly failed batch exits non-zero with each unreadable
+id named on stderr.
 
 `--version` answers before any config is read, so it works on a machine
 where nothing is set up yet:
@@ -502,15 +541,19 @@ Ids are message UIDs. `email.list` is `UID SEARCH UNSEEN` / `SEEN` /
 `email.mark_seen` stores `+FLAGS \Seen`. One authenticated connection is
 reused across calls — validated before each use, closed on any error, and
 re-dialled when the server drops it, so there is still no state to lose
-across restarts or idle timeouts. A batch (`ids`) issues one `COPY` and
-one `STORE` for the whole set rather than a round trip per message.
+across restarts or idle timeouts. A curation batch (`ids`) issues one
+`COPY` and one `STORE` for the whole set rather than a round trip per
+message; a fetch batch issues one `UID FETCH RFC822.SIZE` to measure it
+and one `UID FETCH BODY.PEEK[]` to carry it.
 Optional: `BRIEFKASTEN_IMAP_MAILBOX` (default `INBOX`),
 `BRIEFKASTEN_IMAP_INSECURE=1` for plaintext IMAP (local/testing only).
 
 Remote backends are wrapped in [fortify](https://github.com/klarlabs-studio/fortify)
 resilience automatically: per-call timeout, exponential-backoff retry,
-and a circuit breaker that fast-fails while the server is down. Bad
-message ids are never retried and never trip the breaker.
+and a circuit breaker that fast-fails while the server is down. Caller
+mistakes — a bad message id, a malformed batch, a fetch measured over
+the budget — are never retried and never trip the breaker: the server
+answered them correctly.
 
 #### Gmail
 
@@ -544,8 +587,9 @@ c := client.New(transport)
 c.Initialize(ctx)
 
 res, _ := c.CallTool(ctx, "email.list_unread", map[string]any{})
-// fetch each id, ingest, then email.mark_seen — only after success,
-// so failures stay unread for retry.
+// fetch the ids (one call: {"ids": [...]}, refused if it measures over
+// 25 MiB — split and repeat), ingest, then email.mark_seen — only after
+// success, so failures stay unread for retry.
 
 // Looking back at processed mail is the same call with a scope, and the
 // ids it returns act like any other: fetch, archive, or delete them.

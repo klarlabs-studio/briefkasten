@@ -122,6 +122,44 @@ func (m *Mailbox) Fetch(ctx context.Context, id string) ([]byte, error) {
 	return nil, fmt.Errorf("%w: %q", domain.ErrBadID, id)
 }
 
+// Sizes reports each id's size on disk without opening a single message.
+// It is what bounds a batched fetch here: a stat per id is cheap enough
+// that measuring first and reading second costs nothing worth saving,
+// and it is the only way to refuse an oversized batch before the bytes
+// are in memory.
+//
+// An id this mailbox does not hold is left out of the map rather than
+// failing the call — it becomes its own failure when the fetch runs, and
+// the ids that are here still get measured.
+func (m *Mailbox) Sizes(ctx context.Context, ids []string) (map[string]int64, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("briefkasten: sizes: %w", err)
+	}
+	out := make(map[string]int64, len(ids))
+	for _, id := range ids {
+		path, err := m.locate(id)
+		if err != nil {
+			// Unknown or unusable ids are simply not measured. Both are
+			// answered per id by the fetch itself.
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			// The file was there a moment ago; a failing stat is the disk
+			// in trouble, not a caller mistake, and must not be rounded
+			// down to "zero bytes" in a budget check.
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("briefkasten: size %q: %w", id, err)
+		}
+		out[id] = info.Size()
+	}
+	return out, nil
+}
+
+var _ domain.MessageSizer = (*Mailbox)(nil)
+
 // MarkSeen moves a message from new/ to cur/. Acknowledging a message
 // that is already read succeeds without doing anything — the tool is
 // idempotent, and an agent re-acknowledging its work is not an error.

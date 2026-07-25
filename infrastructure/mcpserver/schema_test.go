@@ -17,7 +17,6 @@ func TestToolInputSchemasMarkRequiredFields(t *testing.T) {
 	}
 
 	wantRequired := map[string][]string{
-		"email.fetch":  {"id"},
 		"email.search": {"query"},
 	}
 	// The batch-taking tools cannot mark either field required: exactly
@@ -25,6 +24,7 @@ func TestToolInputSchemasMarkRequiredFields(t *testing.T) {
 	// builder emits cannot express. Both must still be declared and
 	// described, and the handler enforces the exclusivity.
 	wantOptional := map[string][]string{
+		"email.fetch":     {"id", "ids"},
 		"email.mark_seen": {"id", "ids"},
 		"email.archive":   {"id", "ids"},
 		"email.delete":    {"id", "ids"},

@@ -71,9 +71,14 @@ func Wrap(mb domain.Mailbox, cfg Config) *Mailbox {
 				// bad id nor a caller that hung up. Without the second
 				// clause a client that closes its connection five times
 				// would open the breaker on every other client's behalf,
-				// having learnt nothing about the server at all.
+				// having learnt nothing about the server at all. A batch
+				// the caller shaped badly — malformed, or measured over the
+				// fetch budget — says exactly as little about the server:
+				// the backend answered the question correctly.
 				return err == nil ||
 					errors.Is(err, domain.ErrBadID) ||
+					errors.Is(err, domain.ErrBulkSize) ||
+					errors.Is(err, domain.ErrFetchTooLarge) ||
 					errors.Is(err, context.Canceled)
 			},
 		}),
@@ -89,9 +94,15 @@ func Wrap(mb domain.Mailbox, cfg Config) *Mailbox {
 			// connection, a refused dial — never reach this clause and are
 			// still retried. context.Canceled is listed for the same
 			// reason from the other direction: nobody is waiting for the
-			// answer any more.
-			NonRetryableErrors: []error{domain.ErrBadID, context.DeadlineExceeded, context.Canceled},
-			Jitter:             true,
+			// answer any more. A batch that is malformed or measured over
+			// the fetch budget joins them: it is refused identically on
+			// every attempt, so retrying only spends the pre-flight round
+			// trip again on the caller's behalf.
+			NonRetryableErrors: []error{
+				domain.ErrBadID, domain.ErrBulkSize, domain.ErrFetchTooLarge,
+				context.DeadlineExceeded, context.Canceled,
+			},
+			Jitter: true,
 		}),
 		to: timeout.New[any](timeout.Config{}),
 		op: cfg.OpTimeout,
@@ -131,6 +142,35 @@ func (r *Mailbox) Fetch(ctx context.Context, id string) ([]byte, error) {
 		return nil, err
 	}
 	return v.([]byte), nil
+}
+
+// FetchMany reads a batch through the resilience pipeline. The whole
+// batch is one call through it — one backend operation, one timeout, one
+// verdict for the breaker — and without this forward the wrapped
+// backend's native batching would be invisible.
+func (r *Mailbox) FetchMany(ctx context.Context, ids []string) (domain.FetchResult, error) {
+	v, err := r.execute(ctx, func(ctx context.Context) (any, error) {
+		return fetchManyFallback(ctx, r.mb, ids)
+	})
+	if err != nil {
+		return domain.FetchResult{}, err
+	}
+	return v.(domain.FetchResult), nil
+}
+
+// Sizes measures a batch through the resilience pipeline. Sizing talks to
+// the server, so it deserves the same timeout and breaker as any other
+// call.
+func (r *Mailbox) Sizes(ctx context.Context, ids []string) (map[string]int64, error) {
+	sizer, ok := r.mb.(domain.MessageSizer)
+	if !ok {
+		return nil, errors.New("briefkasten: backend cannot measure message sizes")
+	}
+	v, err := r.execute(ctx, func(ctx context.Context) (any, error) { return sizer.Sizes(ctx, ids) })
+	if err != nil {
+		return nil, err
+	}
+	return v.(map[string]int64), nil
 }
 
 // MarkSeen acknowledges a message through the resilience pipeline.
@@ -279,6 +319,8 @@ var (
 	_ domain.Curator           = (*Mailbox)(nil)
 	_ domain.BulkMailbox       = (*Mailbox)(nil)
 	_ domain.BulkCurator       = (*Mailbox)(nil)
+	_ domain.BulkFetcher       = (*Mailbox)(nil)
+	_ domain.MessageSizer      = (*Mailbox)(nil)
 )
 
 // listFallback mirrors the application-layer scoped-list fallback for
@@ -291,6 +333,62 @@ func listFallback(ctx context.Context, mb domain.Mailbox, scope domain.Scope) ([
 		return nil, fmt.Errorf("briefkasten: backend lists unread mail only, scope %q unsupported", string(scope))
 	}
 	return mb.ListUnread(ctx)
+}
+
+// fetchManyFallback mirrors the application-layer batched-fetch
+// fallback: native batching when the backend has it, one fetch per id
+// otherwise — and in both cases the size pre-flight comes first.
+func fetchManyFallback(ctx context.Context, mb domain.Mailbox, ids []string) (domain.FetchResult, error) {
+	if err := domain.CheckBulkIDs(ids); err != nil {
+		return domain.FetchResult{}, err
+	}
+	if bf, ok := mb.(domain.BulkFetcher); ok {
+		return bf.FetchMany(ctx, ids)
+	}
+	if err := preflightFetchFallback(ctx, mb, ids); err != nil {
+		return domain.FetchResult{}, err
+	}
+	res := domain.NewFetchResult(len(ids))
+	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			return res, err
+		}
+		raw, err := mb.Fetch(ctx, id)
+		if err != nil {
+			res.Fail(id, err)
+			continue
+		}
+		res.Add(id, raw)
+	}
+	return res, nil
+}
+
+// preflightFetchFallback measures a batch before a byte of it is read. A
+// backend that cannot measure cannot have its batch bounded, and is told
+// to fetch one id at a time rather than allowed an unbounded response.
+func preflightFetchFallback(ctx context.Context, mb domain.Mailbox, ids []string) error {
+	sizer, ok := mb.(domain.MessageSizer)
+	if !ok {
+		return errors.New(
+			"briefkasten: backend cannot measure message sizes, so a batch fetch cannot be bounded — fetch ids one at a time")
+	}
+	sizes, err := sizer.Sizes(ctx, ids)
+	if err != nil {
+		return err
+	}
+	var (
+		total    int64
+		measured int
+	)
+	for _, id := range ids {
+		size, held := sizes[id]
+		if !held {
+			continue
+		}
+		total += size
+		measured++
+	}
+	return domain.CheckFetchBudget(total, measured)
 }
 
 // markSeenManyFallback mirrors the application-layer bulk fallback:

@@ -84,6 +84,17 @@ func (s *Service) Read(ctx context.Context, account, folder, id string) ([]byte,
 	return box.Fetch(ctx, id)
 }
 
+// ReadMany returns the raw bytes for a batch of messages, reporting the
+// outcome per id. The batch is measured before anything is read and
+// refused whole if it would exceed domain.MaxFetchBytes.
+func (s *Service) ReadMany(ctx context.Context, account, folder string, ids []string) (domain.FetchResult, error) {
+	box, err := s.Resolve(ctx, account, folder)
+	if err != nil {
+		return domain.FetchResult{}, err
+	}
+	return fetchMany(ctx, box, ids)
+}
+
 // MarkSeen acknowledges a processed message. Idempotent: a message that
 // is already read stays read and the call succeeds.
 func (s *Service) MarkSeen(ctx context.Context, account, folder, id string) error {
@@ -250,6 +261,83 @@ func bulkEach(ctx context.Context, ids []string, op func(context.Context, string
 		res.Succeed(id)
 	}
 	return res, nil
+}
+
+// fetchEach is bulkEach for an operation whose successes carry bytes.
+// Same contract: one unreadable id is that id's own failure, and only
+// cancellation stops the loop.
+func fetchEach(
+	ctx context.Context, ids []string, fetch func(context.Context, string) ([]byte, error),
+) (domain.FetchResult, error) {
+	res := domain.NewFetchResult(len(ids))
+	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			return res, err
+		}
+		raw, err := fetch(ctx, id)
+		if err != nil {
+			res.Fail(id, err)
+			continue
+		}
+		res.Add(id, raw)
+	}
+	return res, nil
+}
+
+// fetchMany reads a batch: natively when the backend batches, id by id
+// otherwise. The id cap is checked here, before any dispatch, so it holds
+// for every backend.
+//
+// A backend that batches natively pre-flights the size itself — it can
+// measure the whole set in the same round trip it would spend anyway.
+// Everything else is measured here, before the loop starts, because
+// discovering the size while reading has already spent the memory.
+func fetchMany(ctx context.Context, mb domain.Mailbox, ids []string) (domain.FetchResult, error) {
+	if err := domain.CheckBulkIDs(ids); err != nil {
+		return domain.FetchResult{}, err
+	}
+	if bf, ok := mb.(domain.BulkFetcher); ok {
+		return bf.FetchMany(ctx, ids)
+	}
+	if err := preflightFetch(ctx, mb, ids); err != nil {
+		return domain.FetchResult{}, err
+	}
+	return fetchEach(ctx, ids, mb.Fetch)
+}
+
+// preflightFetch measures a batch before a byte of it is read.
+//
+// A backend that cannot measure is refused rather than indulged: the
+// alternative is an unbounded response, and "we could not tell how big
+// this was going to be" is not a reason to find out the expensive way.
+// The single-message fetch is untouched and remains the way through.
+//
+// Ids the backend does not hold are absent from the measurement and
+// counted out of the total. They cost nothing to return, and they become
+// their own failures when the fetch itself runs.
+func preflightFetch(ctx context.Context, mb domain.Mailbox, ids []string) error {
+	sizer, ok := mb.(domain.MessageSizer)
+	if !ok {
+		return errors.New(
+			"briefkasten: backend cannot measure message sizes, so a batch fetch cannot be bounded — fetch ids one at a time")
+	}
+	sizes, err := sizer.Sizes(ctx, ids)
+	if err != nil {
+		return err
+	}
+	var (
+		total    int64
+		measured int
+	)
+	for _, id := range ids {
+		size, held := sizes[id]
+		if !held {
+			continue
+		}
+		total += size
+		measured++
+	}
+	return domain.CheckFetchBudget(total, measured)
 }
 
 // markSeenMany acknowledges a batch: natively when the backend batches,

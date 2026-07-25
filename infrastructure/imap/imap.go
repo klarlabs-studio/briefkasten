@@ -402,6 +402,163 @@ func (m *Mailbox) Fetch(ctx context.Context, id string) ([]byte, error) {
 	return raw, nil
 }
 
+// Sizes reports the RFC822.SIZE of each id in one UID FETCH, whatever
+// the size of the set. It reads no bodies: the server answers from the
+// message's stored size, so measuring a hundred messages costs one round
+// trip and no bytes of mail.
+//
+// Ids the mailbox does not hold are absent from the map, exactly as they
+// are on the maildir backend — a stale id is that id's own failure once
+// the fetch runs, not a reason to refuse the measurement.
+func (m *Mailbox) Sizes(ctx context.Context, ids []string) (map[string]int64, error) {
+	refs, _ := parseRefs(ids)
+	out := make(map[string]int64, len(refs))
+	if len(refs) == 0 {
+		return out, nil
+	}
+	err := m.withConn(ctx, func(c *imapclient.Client) error {
+		sizes, err := fetchSizes(ctx, c, refs)
+		if err != nil {
+			return err
+		}
+		for _, r := range refs {
+			if size, held := sizes[r.uid]; held {
+				out[r.id] = size
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+var _ domain.MessageSizer = (*Mailbox)(nil)
+
+// fetchSizes runs the pre-flight: one UID FETCH RFC822.SIZE over the
+// whole set. It doubles as the existence check the bulk paths already
+// make — a UID the mailbox does not hold simply comes back in no reply —
+// so bounding the batch costs nothing beyond what locating it would.
+func fetchSizes(ctx context.Context, c *imapclient.Client, refs []uidRef) (map[imap.UID]int64, error) {
+	what := fmt.Sprintf("size %d ids", len(refs))
+	found, err := awaitValue(ctx, c, what,
+		c.Fetch(uidSetOf(refs), &imap.FetchOptions{UID: true, RFC822Size: true}).Collect, cmdTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("imap: %s: %w", what, err)
+	}
+	sizes := make(map[imap.UID]int64, len(found))
+	for _, msg := range found {
+		sizes[msg.UID] = msg.RFC822Size
+	}
+	return sizes, nil
+}
+
+// FetchMany reads a whole set of UIDs with one BODY.PEEK fetch — the
+// \Seen flag is untouched, exactly as in Fetch — after one pre-flight
+// that measures the set.
+//
+// The order matters more than the batching does. A hundred messages with
+// attachments can be hundreds of megabytes, and by the time a
+// fetch-then-check discovers that, it has already allocated the memory
+// the budget exists to protect and the client is already holding the
+// reply. So the size comes first, over a set the server can measure
+// without reading anything, and the bodies are only asked for once the
+// total is known to fit.
+//
+// Failure splits the same way it does for a bulk move. An id this call
+// can attribute — unparseable, or absent from the mailbox — becomes that
+// id's own failure and leaves the rest of the batch alone. A command that
+// fails outright fails the call. And a batch over the budget fails the
+// call as a whole, because a partial answer to "give me these fifty
+// messages" is not something a caller asked for.
+func (m *Mailbox) FetchMany(ctx context.Context, ids []string) (domain.FetchResult, error) {
+	if err := domain.CheckBulkIDs(ids); err != nil {
+		return domain.FetchResult{}, err
+	}
+	refs, bad := parseRefs(ids)
+	res := domain.NewFetchResult(len(ids))
+	for _, f := range bad {
+		res.Fail(f.ID, f.Err)
+	}
+	if len(refs) == 0 {
+		return res, nil
+	}
+
+	// A refusal is the caller's batch being wrong, not the session: the
+	// connection stays healthy and goes back to the cache, so it is
+	// carried out rather than returned through withConn, which closes a
+	// connection whose operation failed.
+	var refused error
+	err := m.withConn(ctx, func(c *imapclient.Client) error {
+		sizes, err := fetchSizes(ctx, c, refs)
+		if err != nil {
+			return err
+		}
+		present := make([]uidRef, 0, len(refs))
+		var total int64
+		for _, r := range refs {
+			size, held := sizes[r.uid]
+			if !held {
+				res.Fail(r.id, fmt.Errorf("%w: %s", domain.ErrBadID, r.id))
+				continue
+			}
+			total += size
+			present = append(present, r)
+		}
+		if len(present) == 0 {
+			return nil
+		}
+		if err := domain.CheckFetchBudget(total, len(present)); err != nil {
+			refused = err
+			return nil
+		}
+		return fetchBodies(ctx, c, &res, present)
+	})
+	if err != nil {
+		return domain.FetchResult{}, err
+	}
+	if refused != nil {
+		return domain.FetchResult{}, refused
+	}
+	return res, nil
+}
+
+var _ domain.BulkFetcher = (*Mailbox)(nil)
+
+// fetchBodies reads the whole set in one UID FETCH and records each
+// message under the id the caller passed. A message the server answers
+// without a body section is that id's own failure: the rest of the batch
+// is perfectly good mail and must still reach the caller.
+func fetchBodies(
+	ctx context.Context, c *imapclient.Client, res *domain.FetchResult, refs []uidRef,
+) error {
+	what := fmt.Sprintf("fetch %d ids", len(refs))
+	section := &imap.FetchItemBodySection{Peek: true}
+	msgs, err := awaitValue(ctx, c, what, c.Fetch(uidSetOf(refs), &imap.FetchOptions{
+		UID:         true,
+		BodySection: []*imap.FetchItemBodySection{section},
+	}).Collect, cmdTimeout)
+	if err != nil {
+		return fmt.Errorf("imap: %s: %w", what, err)
+	}
+	bodies := make(map[imap.UID][]byte, len(msgs))
+	for _, msg := range msgs {
+		if raw := msg.FindBodySection(section); raw != nil {
+			bodies[msg.UID] = raw
+		}
+	}
+	for _, r := range refs {
+		raw, ok := bodies[r.uid]
+		if !ok {
+			res.Fail(r.id, fmt.Errorf("imap: fetch %s: no body section in response", r.id))
+			continue
+		}
+		res.Add(r.id, raw)
+	}
+	return nil
+}
+
 // Search returns unseen UIDs matching the query (UID SEARCH UNSEEN TEXT).
 func (m *Mailbox) Search(ctx context.Context, query string) ([]string, error) {
 	return m.SearchScope(ctx, domain.ScopeUnread, query)
@@ -537,20 +694,31 @@ type uidRef struct {
 	uid imap.UID
 }
 
-// splitParsable separates the ids that are UIDs at all from the ones
-// that are not. A malformed id is the caller's mistake and is answered
+// parseRefs separates the ids that are UIDs at all from the ones that
+// are not. A malformed id is the caller's mistake and is answered
 // without spending a round trip on it — but it is answered per id, not
 // by refusing the batch.
-func splitParsable(ids []string) (domain.BulkResult, []uidRef) {
-	res := domain.NewBulkResult(len(ids))
+func parseRefs(ids []string) ([]uidRef, []domain.BulkFailure) {
 	refs := make([]uidRef, 0, len(ids))
+	var bad []domain.BulkFailure
 	for _, id := range ids {
 		uid, err := parseUID(id)
 		if err != nil {
-			res.Fail(id, err)
+			bad = append(bad, domain.BulkFailure{ID: id, Err: err})
 			continue
 		}
 		refs = append(refs, uidRef{id: id, uid: uid})
+	}
+	return refs, bad
+}
+
+// splitParsable is parseRefs seeded into a BulkResult, for the curation
+// and mark-seen batches whose successes are bare ids.
+func splitParsable(ids []string) (domain.BulkResult, []uidRef) {
+	refs, bad := parseRefs(ids)
+	res := domain.NewBulkResult(len(ids))
+	for _, f := range bad {
+		res.Fail(f.ID, f.Err)
 	}
 	return res, refs
 }

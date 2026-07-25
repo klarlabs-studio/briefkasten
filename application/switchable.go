@@ -49,6 +49,23 @@ func (s *Switchable) Fetch(ctx context.Context, id string) ([]byte, error) {
 	return s.current().Fetch(ctx, id)
 }
 
+// FetchMany forwards to the backend's BulkFetcher, or pre-flights and
+// loops. Without the forward the capability would vanish behind this
+// decorator and every batch would cost one round trip per message.
+func (s *Switchable) FetchMany(ctx context.Context, ids []string) (domain.FetchResult, error) {
+	return fetchMany(ctx, s.current(), ids)
+}
+
+// Sizes forwards to the backend's MessageSizer. A backend that cannot
+// measure says so — the pre-flight must not be able to pass by default.
+func (s *Switchable) Sizes(ctx context.Context, ids []string) (map[string]int64, error) {
+	sizer, ok := s.current().(domain.MessageSizer)
+	if !ok {
+		return nil, errors.New("briefkasten: backend cannot measure message sizes")
+	}
+	return sizer.Sizes(ctx, ids)
+}
+
 // MarkSeen acknowledges a message on the current backend.
 func (s *Switchable) MarkSeen(ctx context.Context, id string) error {
 	return s.current().MarkSeen(ctx, id)
@@ -140,4 +157,6 @@ var (
 	_ domain.CurationInspector = (*Switchable)(nil)
 	_ domain.BulkMailbox       = (*Switchable)(nil)
 	_ domain.BulkCurator       = (*Switchable)(nil)
+	_ domain.BulkFetcher       = (*Switchable)(nil)
+	_ domain.MessageSizer      = (*Switchable)(nil)
 )
