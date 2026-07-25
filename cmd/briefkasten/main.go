@@ -21,6 +21,7 @@
 //	briefkasten outbox         (outbound ids by lifecycle state)
 //	briefkasten archive <id>   (prompts; --yes to skip)
 //	briefkasten delete  <id>   (prompts; --yes to skip — soft delete, to trash)
+//	briefkasten --version      (or "version"; --json for build metadata)
 //
 // Configuration: briefkasten.yaml / BRIEFKASTEN_CONFIG / BRIEFKASTEN_* env;
 // see the README for the full reference.
@@ -29,7 +30,6 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -49,10 +49,6 @@ var (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "version" {
-		fmt.Printf("briefkasten %s (commit: %s, built: %s)\n", version, commit, date)
-		return
-	}
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 

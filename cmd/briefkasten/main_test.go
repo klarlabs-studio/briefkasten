@@ -1,11 +1,9 @@
 package main
 
 import (
-	"io"
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -13,35 +11,10 @@ import (
 	"go.klarlabs.de/briefkasten"
 )
 
-func TestMainVersionCommand(t *testing.T) {
-	oldArgs := os.Args
-	oldStdout := os.Stdout
-	t.Cleanup(func() {
-		os.Args = oldArgs
-		os.Stdout = oldStdout
-	})
-
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Args = []string{"briefkasten", "version"}
-	os.Stdout = w
-	main() // the version command returns instead of serving or exiting
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
-	}
-	os.Stdout = oldStdout
-
-	out, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := string(out)
-	if !strings.Contains(got, "briefkasten dev") || !strings.Contains(got, "commit: none") {
-		t.Errorf("version output = %q, want build metadata", got)
-	}
-}
+// Version reporting used to live in main(), which returned early for it
+// and so could be called from a test. It now runs inside run() with an
+// injected writer, where TestCLIVersion* covers every spelling — main()
+// is a single os.Exit(run(...)) with nothing left to assert.
 
 func TestServeConfigLoadError(t *testing.T) {
 	t.Setenv("BRIEFKASTEN_CONFIG", "/no/such/briefkasten.yaml")
