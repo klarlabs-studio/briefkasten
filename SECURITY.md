@@ -171,10 +171,16 @@ These are the things worth your time and ours.
   rejected when they carry CR or LF; a way to smuggle headers into a
   queued message is in scope.
 - **Origin confusion in the MCP Apps UI.** The inbox UI talks to its
-  host over `postMessage`. Concrete abuse of that channel — a page that
-  can drive tool calls it should not, or read mail out of the frame — is
-  in scope; a note that the target origin is broad, without a path to
-  impact, is a hardening suggestion and welcome as a normal issue.
+  host over `postMessage`. It accepts a reply only when `ev.source` is
+  its own parent, and targets the origin the host first spoke from —
+  so a sibling or opener frame can neither drive a tool call nor forge
+  a result for one already in flight. Anything that gets past that is in
+  scope: a way to make a foreign frame the apparent source, a reply
+  accepted before the host has identified itself, or mail read out of
+  the frame. Note the wildcard target survives for sandboxed hosts,
+  whose origin is `"null"` — a value many windows share, so pinning it
+  would identify nobody; the `ev.source` check is what carries the
+  guarantee there.
 - **Endpoint authentication bypass.** Basic auth on the HTTP transport:
   a bypass, a timing oracle in verification, or a method served without
   credentials other than the handshake (`initialize`, `ping`).
