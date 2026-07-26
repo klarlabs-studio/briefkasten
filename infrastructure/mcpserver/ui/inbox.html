@@ -28,7 +28,7 @@
     font-weight: 500;
   }
   .sub { color: var(--ink-soft); font-size: 0.8rem; margin-bottom: 1rem; }
-  .bar { display: flex; gap: 0.5rem; margin-bottom: 0.8rem; }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-bottom: 0.8rem; }
   button {
     font: inherit; font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase;
     background: none; border: 1px solid var(--ink); color: var(--ink);
@@ -43,10 +43,10 @@
     padding: 0.7rem 0.9rem; margin-bottom: 0.6rem;
   }
   .msg.read { border-left-color: var(--rule); }
-  .msg header { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
-  .msg .from { color: var(--ink-soft); font-size: 0.78rem; }
-  .msg .subject { font-weight: 600; }
-  .msg .actions { display: flex; gap: 0.4rem; flex-shrink: 0; }
+  .msg header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 0.6rem 1rem; }
+  .msg .from { color: var(--ink-soft); font-size: 0.78rem; word-break: break-word; }
+  .msg .subject { font-weight: 600; word-break: break-word; }
+  .msg .actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
   .badge {
     font-size: 0.66rem; letter-spacing: 0.08em; text-transform: uppercase;
     border: 1px solid var(--rule); padding: 0.05rem 0.35rem; margin-right: 0.4rem;
@@ -56,6 +56,11 @@
   select {
     font: inherit; font-size: 0.78rem; background: transparent;
     border: 1px solid var(--ink); color: var(--ink); padding: 0.3rem 0.5rem;
+  }
+  .bar input {
+    font: inherit; font-size: 0.82rem; background: transparent;
+    border: 1px solid var(--rule); color: var(--ink); padding: 0.3rem 0.5rem;
+    flex: 1 1 9rem; min-width: 7rem;
   }
   .msg pre {
     font: 0.78rem/1.5 ui-monospace, Menlo, monospace;
@@ -69,24 +74,42 @@
   .msg .error:empty { display: none; }
   button:disabled { opacity: 0.4; cursor: default; }
   button:disabled:hover { background: none; color: var(--ink); }
+  form.compose, form.inline { display: grid; gap: 0.5rem; }
   form.compose {
     background: var(--card); border: 1px solid var(--rule);
-    padding: 0.9rem; margin-top: 1rem; display: grid; gap: 0.5rem;
+    padding: 0.9rem; margin-top: 1rem;
   }
-  form.compose input, form.compose textarea {
+  form.inline {
+    border-top: 1px dashed var(--rule); margin-top: 0.6rem; padding-top: 0.6rem;
+  }
+  form.compose input, form.compose textarea,
+  form.inline input, form.inline textarea {
     font: inherit; padding: 0.4rem 0.5rem;
     border: none; border-bottom: 1px solid var(--rule); background: transparent;
   }
   form.compose textarea { min-height: 5rem; }
+  form.inline textarea { min-height: 4.5rem; }
+  form.inline .label, form.compose .label {
+    font-family: Georgia, "Times New Roman", serif; font-weight: 600;
+  }
+  form.inline .bar, form.compose .bar { margin-bottom: 0; }
   .status { font-size: 0.78rem; color: var(--green); }
+  .status.bad { color: var(--red); }
+  .hint { color: var(--ink-soft); font-size: 0.75rem; margin-bottom: 0.8rem; word-break: break-word; }
+  .hint:empty { display: none; }
+  .note { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin-bottom: 0.8rem; font-size: 0.8rem; color: var(--ink-soft); }
+  .note:empty { display: none; }
   .rule { border-top: 2px solid var(--ink); margin: 1.2rem 0 0.8rem; }
 </style>
 </head>
 <body>
   <h1>Briefkasten<span style="color:var(--green)">.</span></h1>
-  <p class="sub">Mailbox over MCP — acknowledged only after you mark them. Archive and delete are soft moves: nothing is ever destroyed.</p>
+  <p class="sub">Mailbox over MCP — acknowledged only after you mark them. Archive and delete are soft moves: nothing is ever destroyed. Every send, reply and forward waits for you to approve it in the host.</p>
 
   <div class="bar">
+    <select id="folder" aria-label="Which folder to read">
+      <option value="">Inbox (default)</option>
+    </select>
     <select id="scope" aria-label="Which messages to show">
       <option value="unread">Unread</option>
       <option value="read">Read</option>
@@ -95,12 +118,22 @@
     <button id="refresh">Refresh</button>
     <span class="status" id="status"></span>
   </div>
+  <p class="hint" id="curation"></p>
+
+  <form class="bar" id="searchForm">
+    <input id="query" type="search" placeholder="Search this folder" aria-label="Search mail" />
+    <button type="submit">Search</button>
+  </form>
+  <p class="note" id="note"></p>
+
   <div id="list"></div>
 
   <div class="rule"></div>
   <form class="compose" id="compose">
-    <strong style="font-family:Georgia,serif">Compose</strong>
+    <span class="label">Compose</span>
     <input id="to" placeholder="To (comma-separated)" required />
+    <input id="cc" placeholder="Cc (optional)" />
+    <input id="bcc" placeholder="Bcc (optional — hidden from every recipient)" />
     <input id="subject" placeholder="Subject" required />
     <textarea id="body" placeholder="Body" required></textarea>
     <div class="bar">
@@ -140,19 +173,20 @@ window.addEventListener('message', (ev) => {
   else resolve(m.result);
 });
 
-// Reads answer straight away; archive, delete, and send are gated on a
-// human confirming in the host, so they get room for someone to decide.
+// Reads answer straight away; archive, delete, send, reply, and forward
+// are gated on a human confirming in the host, so they get room for
+// someone to read the prompt and decide.
 const READ_TIMEOUT = 8000;
 const CONFIRM_TIMEOUT = 120000;
 
-function callTool(name, args, timeoutMs) {
+function rpc(method, params, timeoutMs) {
   return new Promise((resolve, reject) => {
     const id = 'ui-' + ++seq;
     pending.set(id, { resolve, reject });
     // Targeted once the host has identified itself; '*' only until then,
     // and for sandboxed hosts that have no origin to target.
     window.parent.postMessage(
-      { jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args || {} } },
+      { jsonrpc: '2.0', id, method, params },
       hostOrigin || '*',
     );
     setTimeout(() => {
@@ -164,6 +198,10 @@ function callTool(name, args, timeoutMs) {
   });
 }
 
+function callTool(name, args, timeoutMs) {
+  return rpc('tools/call', { name, arguments: args || {} }, timeoutMs);
+}
+
 function toolJSON(result) {
   // Tool results arrive as content blocks; the payload is JSON text.
   const block = (result && result.content && result.content[0]) || {};
@@ -173,9 +211,22 @@ function toolJSON(result) {
   return block.text ?? block;
 }
 
+function resourceJSON(result) {
+  // Resource reads arrive as contents entries; ours are JSON text.
+  const entry = (result && result.contents && result.contents[0]) || {};
+  if (typeof entry.text === 'string') {
+    try { return JSON.parse(entry.text); } catch { return null; }
+  }
+  return null;
+}
+
 function header(raw, name) {
   const m = raw.match(new RegExp('^' + name + ':\\s*(.+)$', 'mi'));
   return m ? m[1].trim() : '';
+}
+
+function addresses(value) {
+  return value.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
 const EMPTY = {
@@ -184,6 +235,45 @@ const EMPTY = {
   all: 'Mailbox empty.',
 };
 
+// Whatever folder is on show scopes every call made about it, so acting
+// on a message reaches the same one that was listed. An empty selection
+// means the server's default folder — the inbox — and is left off the
+// call rather than guessed at here.
+function withFolder(args) {
+  const folder = document.getElementById('folder').value;
+  if (folder) args.folder = folder;
+  return args;
+}
+
+// Folders come from the email://folders resource rather than a tool
+// call: it is a plain read the host already has, and it carries the
+// curation plan along with the folder list, so "where would Archive put
+// this?" is answered before anyone is asked to approve a move.
+async function loadFolders() {
+  let payload = null;
+  try {
+    payload = resourceJSON(await rpc('resources/read', { uri: 'email://folders' }, READ_TIMEOUT));
+  } catch {
+    return; // A host that cannot read resources still gets the default folder.
+  }
+  if (!payload) return;
+  const select = document.getElementById('folder');
+  for (const name of Array.isArray(payload.folders) ? payload.folders : []) {
+    // Folder names are server data: they set a value and a text node,
+    // never markup.
+    if (typeof name !== 'string' || !name) continue;
+    const option = document.createElement('option');
+    option.value = name;
+    option.textContent = name;
+    select.appendChild(option);
+  }
+  const plan = payload.curation;
+  if (plan && plan.archive && plan.trash) {
+    document.getElementById('curation').textContent =
+      'Archive files into ' + plan.archive.folder + ' · Delete files into ' + plan.trash.folder + '.';
+  }
+}
+
 // action wires a button to a tool call over one message. Archive and
 // delete carry no confirm flag: the host elicits the human, which is the
 // whole point of the gate — the UI must not answer it on their behalf.
@@ -191,10 +281,10 @@ function action(label, tool, id, row) {
   const btn = document.createElement('button');
   btn.textContent = label;
   btn.onclick = async () => {
-    const buttons = row.querySelectorAll('button');
+    const buttons = row.querySelectorAll('.actions button');
     buttons.forEach((b) => (b.disabled = true));
     try {
-      await callTool(tool, { id }, tool === 'email.mark_seen' ? READ_TIMEOUT : CONFIRM_TIMEOUT);
+      await callTool(tool, withFolder({ id }), tool === 'email.mark_seen' ? READ_TIMEOUT : CONFIRM_TIMEOUT);
       refresh();
     } catch (e) {
       buttons.forEach((b) => (b.disabled = false));
@@ -205,6 +295,107 @@ function action(label, tool, id, row) {
   return btn;
 }
 
+const COMPOSER = {
+  reply: { label: 'Reply', submit: 'Queue reply', hint: 'Your reply — the original is quoted beneath it' },
+  'reply-all': { label: 'Reply all', submit: 'Queue reply', hint: 'Your reply to everyone the original could see' },
+  forward: { label: 'Forward', submit: 'Queue forward', hint: 'Note above the forwarded message (optional)' },
+};
+
+// composer opens under the message it answers rather than over it: the
+// mail being replied to stays readable while it is being answered, and
+// the row keeps its own status and errors. It carries no recipient field
+// for a reply — the server reads the original and derives the audience,
+// and handing that back to the caller is precisely what email.reply
+// exists to avoid. Forward is the other case: its recipients are new, so
+// a human types them.
+function composer(mode, id, row) {
+  const slot = row.querySelector('.composer');
+  if (slot.dataset.open === mode) {
+    slot.dataset.open = '';
+    slot.replaceChildren();
+    return;
+  }
+  const kind = COMPOSER[mode];
+  const forward = mode === 'forward';
+  const form = document.createElement('form');
+  form.className = 'inline';
+  // Static skeleton only; every value below is set as text.
+  form.innerHTML =
+    '<span class="label"></span>' +
+    (forward ? '<input class="to" placeholder="Forward to (comma-separated)" required />' : '') +
+    '<textarea class="body"></textarea>' +
+    '<div class="bar"><button type="submit" class="primary"></button>' +
+    '<button type="button" class="cancel">Cancel</button><span class="status"></span></div>';
+  form.querySelector('.label').textContent = kind.label;
+  form.querySelector('.body').placeholder = kind.hint;
+  form.querySelector('.body').required = !forward;
+  form.querySelector('button[type="submit"]').textContent = kind.submit;
+  form.querySelector('.cancel').onclick = () => {
+    slot.dataset.open = '';
+    slot.replaceChildren();
+  };
+  form.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const note = form.querySelector('.status');
+    note.className = 'status';
+    note.textContent = 'queuing…';
+    const body = form.querySelector('.body').value;
+    try {
+      let res;
+      if (forward) {
+        res = toolJSON(await callTool('email.forward', withFolder({
+          id,
+          to: addresses(form.querySelector('.to').value),
+          body,
+        }), CONFIRM_TIMEOUT));
+      } else {
+        const args = withFolder({ id, body });
+        // Reply-all widens the audience to everyone the original could
+        // see. The flag is what the host's prompt counts recipients for,
+        // so it travels; the answer to that prompt is the human's.
+        if (mode === 'reply-all') args.all = true;
+        res = toolJSON(await callTool('email.reply', args, CONFIRM_TIMEOUT));
+      }
+      note.textContent = 'queued: ' + res.id;
+      form.querySelectorAll('input, textarea, button').forEach((f) => (f.disabled = true));
+    } catch (e) {
+      // A declined send is reported here in the host's own words: the
+      // refusal is the answer, not a bug to swallow.
+      note.className = 'status bad';
+      note.textContent = e.message;
+    }
+  };
+  slot.dataset.open = mode;
+  slot.replaceChildren(form);
+}
+
+function composeButton(mode, id, row) {
+  const btn = document.createElement('button');
+  btn.textContent = COMPOSER[mode].label;
+  btn.onclick = () => composer(mode, id, row);
+  return btn;
+}
+
+// query is the live search term; empty means the plain folder listing.
+let query = '';
+
+// searchNote states what is on show and offers the way back, since
+// search results and a listing look alike once rendered.
+function searchNote(total) {
+  const note = document.getElementById('note');
+  note.replaceChildren();
+  if (!query) return;
+  note.append(total + ' matching ' + (total === 1 ? 'message' : 'messages') + ' for “' + query + '”');
+  const back = document.createElement('button');
+  back.textContent = 'Back to listing';
+  back.onclick = () => {
+    query = '';
+    document.getElementById('query').value = '';
+    refresh();
+  };
+  note.appendChild(back);
+}
+
 async function refresh() {
   const list = document.getElementById('list');
   const status = document.getElementById('status');
@@ -212,31 +403,39 @@ async function refresh() {
   status.textContent = 'loading…';
   list.innerHTML = '';
   try {
-    const { ids, total } = toolJSON(await callTool('email.list', { scope }));
+    // Search and list answer in the same shape, so the results replace
+    // the listing in place rather than opening a second surface.
+    const { ids, total } = toolJSON(query
+      ? await callTool('email.search', withFolder({ query, scope }))
+      : await callTool('email.list', withFolder({ scope })));
     // Under scope=all a message's state is not implied by the listing,
     // so ask which ids are still unread rather than guessing.
     let unread = new Set(ids);
     if (scope === 'read') {
       unread = new Set();
     } else if (scope === 'all') {
-      unread = new Set(toolJSON(await callTool('email.list', { scope: 'unread' })).ids);
+      unread = new Set(toolJSON(await callTool('email.list', withFolder({ scope: 'unread' }))).ids);
     }
     status.textContent = total + ' ' + (scope === 'all' ? 'messages' : scope);
+    searchNote(total);
     if (!ids.length) {
       list.replaceChildren(
-        Object.assign(document.createElement('p'), { className: 'empty', textContent: EMPTY[scope] }),
+        Object.assign(document.createElement('p'), {
+          className: 'empty',
+          textContent: query ? 'Nothing matched.' : EMPTY[scope],
+        }),
       );
       return;
     }
     for (const id of ids.slice(0, 10)) {
-      const { raw: b64 } = toolJSON(await callTool('email.fetch', { id }));
+      const { raw: b64 } = toolJSON(await callTool('email.fetch', withFolder({ id })));
       const raw = atob(b64);
       const isUnread = unread.has(id);
       const el = document.createElement('article');
       el.className = isUnread ? 'msg' : 'msg read';
       el.innerHTML =
         '<header><div><div class="subject"><span class="badge"></span></div><div class="from"></div></div>' +
-        '<div class="actions"></div></header><pre></pre><p class="error"></p>';
+        '<div class="actions"></div></header><pre></pre><div class="composer"></div><p class="error"></p>';
       const badge = el.querySelector('.badge');
       badge.className = isUnread ? 'badge unread' : 'badge';
       badge.textContent = isUnread ? 'unread' : 'read';
@@ -247,6 +446,9 @@ async function refresh() {
       if (isUnread) {
         actions.appendChild(action('Mark seen', 'email.mark_seen', id, el));
       }
+      actions.appendChild(composeButton('reply', id, el));
+      actions.appendChild(composeButton('reply-all', id, el));
+      actions.appendChild(composeButton('forward', id, el));
       // Curation reaches read mail too — the backend resolves an id
       // whatever its state, so both buttons stay on every row.
       actions.appendChild(action('Archive', 'email.archive', id, el));
@@ -261,23 +463,44 @@ async function refresh() {
 
 document.getElementById('refresh').onclick = refresh;
 document.getElementById('scope').onchange = refresh;
+document.getElementById('folder').onchange = () => {
+  // A folder change re-runs whatever is on show, search included: the
+  // term belongs to the reader, the folder to the mailbox.
+  refresh();
+};
+document.getElementById('searchForm').onsubmit = (ev) => {
+  ev.preventDefault();
+  query = document.getElementById('query').value.trim();
+  refresh();
+};
 document.getElementById('compose').onsubmit = async (ev) => {
   ev.preventDefault();
   const sendStatus = document.getElementById('sendStatus');
+  sendStatus.className = 'status';
   sendStatus.textContent = 'queuing…';
   try {
-    const res = toolJSON(await callTool('email.send', {
-      to: document.getElementById('to').value.split(',').map((s) => s.trim()).filter(Boolean),
+    const args = {
+      to: addresses(document.getElementById('to').value),
       subject: document.getElementById('subject').value,
       body: document.getElementById('body').value,
-    }, CONFIRM_TIMEOUT));
+    };
+    // Cc and Bcc are left off entirely when empty rather than sent as
+    // empty lists; the host's prompt counts recipients, and an absent
+    // field is not a recipient.
+    const cc = addresses(document.getElementById('cc').value);
+    const bcc = addresses(document.getElementById('bcc').value);
+    if (cc.length) args.cc = cc;
+    if (bcc.length) args.bcc = bcc;
+    const res = toolJSON(await callTool('email.send', args, CONFIRM_TIMEOUT));
     sendStatus.textContent = 'queued: ' + res.id;
     ev.target.reset();
   } catch (e) {
+    sendStatus.className = 'status bad';
     sendStatus.textContent = e.message;
   }
 };
 
+loadFolders();
 refresh();
 </script>
 </body>
