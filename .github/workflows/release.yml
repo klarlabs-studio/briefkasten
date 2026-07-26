@@ -48,7 +48,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
       # Build provenance via GitHub rather than goreleaser: goreleaser v2 OSS
       # has no attestation support (its schema exposes `signs`/`sboms` and
       # nothing else in that space), so the alternative would be hand-rolling
