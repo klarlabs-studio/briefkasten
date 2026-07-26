@@ -50,12 +50,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	deleteFolder := fs.String("delete", "", "with 'folders': delete this folder; refused unless it is empty")
 	yes := fs.Bool("yes", false, "skip confirmation prompts")
 	configPath := fs.String("config", "", "config file (default: $BRIEFKASTEN_CONFIG or ./briefkasten.yaml)")
-	to := fs.String("to", "", "recipients, comma-separated (send)")
+	to := fs.String("to", "", "recipients, comma-separated (send, forward)")
+	cc := fs.String("cc", "", "carbon-copy recipients, comma-separated (send)")
+	bcc := fs.String("bcc", "", "blind carbon-copy recipients, comma-separated (send); envelope only, never rendered")
 	subject := fs.String("subject", "", "subject (send)")
-	body := fs.String("body", "", "body (send)")
-	htmlBody := fs.String("html", "", "HTML alternative body (send)")
+	body := fs.String("body", "", "body (send, reply, forward)")
+	htmlBody := fs.String("html", "", "HTML alternative body (send, reply, forward)")
+	replyAll := fs.Bool("all", false, "with 'reply': copy the original's To and Cc into Cc (never its Bcc)")
 	var attach stringList
-	fs.Var(&attach, "attach", "file to attach; repeatable (send)")
+	fs.Var(&attach, "attach", "file to attach; repeatable (send, reply)")
 	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
@@ -238,6 +241,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		id, err := ob.Enqueue(briefkasten.OutboundMessage{
 			To:          recipients,
+			Cc:          splitList(*cc),
+			Bcc:         splitList(*bcc),
 			Subject:     *subject,
 			Body:        *body,
 			HTMLBody:    *htmlBody,
@@ -247,13 +252,71 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		// Deliver immediately: the CLI has no background worker.
-		if _, err := ob.ProcessOnce(ctx); err != nil {
+		return deliverNow(ctx, ob, id, stderr, emit)
+
+	case "reply", "forward":
+		id := fs.Arg(0)
+		if id == "" {
+			fmt.Fprintf(stderr, "usage: briefkasten %s <id> %s\n", cmd, replyUsageTail(cmd))
+			return 2
+		}
+		ob, _, err := cfg.BuildClientOutbox()
+		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		msg, _ := ob.Status(id)
-		emit(fmt.Sprintf("%s: %s", msg.State, id), map[string]any{"id": id, "state": msg.State})
+		if ob == nil {
+			fmt.Fprintf(stderr, "%s: no outbox configured (set outbox.dir)\n", cmd)
+			return 1
+		}
+		// The recipients are never assembled here: the shared Composer
+		// reads the original and derives them, so the CLI and the MCP
+		// tools answer mail by the identical rules.
+		composer := briefkasten.NewComposer(svc, ob)
+		var msg briefkasten.OutboundMessage
+		if cmd == "reply" {
+			if *body == "" {
+				fmt.Fprintln(stderr, "usage: briefkasten reply <id> --body B [--all] [--html H] [--attach FILE ...]")
+				return 2
+			}
+			attachments, err := loadAttachments(attach)
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			msg, err = composer.PlanReply(ctx, briefkasten.ReplyRequest{
+				Account: *account, Folder: *folder, ID: id, All: *replyAll,
+				Body: *body, HTMLBody: *htmlBody, Attachments: attachments,
+			})
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+		} else {
+			recipients := splitList(*to)
+			if len(recipients) == 0 {
+				fmt.Fprintln(stderr, "usage: briefkasten forward <id> --to a@b.c [--body B] [--html H]")
+				return 2
+			}
+			msg, err = composer.PlanForward(ctx, briefkasten.ForwardRequest{
+				Account: *account, Folder: *folder, ID: id, To: recipients,
+				Body: *body, HTMLBody: *htmlBody,
+			})
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+		}
+		// The operator is shown who the derived message reaches before it
+		// goes, because for a reply-all that is the one thing they did not
+		// type and cannot infer from the command they ran.
+		fmt.Fprintln(stdout, describeAudience(msg))
+		queued, err := composer.Send(msg)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return deliverNow(ctx, ob, queued, stderr, emit)
 
 	case "retry":
 		id := fs.Arg(0)
@@ -377,7 +440,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	default:
 		fmt.Fprintf(stderr, `unknown command %q
 
-usage: briefkasten [serve|list|read|seen|search|folders|profiles|send|retry|outbox|archive|delete|hashpw|version]
+usage: briefkasten [serve|list|read|seen|search|folders|profiles|send|reply|forward|retry|outbox|archive|delete|hashpw|version]
 
 serve [--stdio] [--config FILE]   MCP server; --stdio serves over stdin/stdout
                                   instead of HTTP, for hosts that spawn it.
@@ -421,10 +484,71 @@ read, rather than truncated.
 Curation is soft: archive files away, delete moves to trash — nothing is
 ever expunged. Both prompt once for confirmation unless --yes; for a
 batch the prompt names the count and the destination folder.
-`, cmd, briefkasten.MaxBulkIDs, briefkasten.MaxFetchBytes>>20)
+
+send --to a@b.c --subject S --body B also takes --cc and --bcc (both
+comma-separated). A --bcc address travels in the SMTP envelope only: it
+is never written into the message, so no other recipient can see it.
+
+reply <id> --body B answers a message. You never pass recipients — the
+original is read and they are derived from it: its Reply-To, or its From
+when it named none, with In-Reply-To and References set so the reply
+threads, and "Re:" added only if the subject lacks one. --all copies the
+original's To and Cc into Cc; it never copies Bcc (visible or not, that
+list was hidden on purpose) and never sends to this outbox's own address,
+comparing addresses rather than display names and collapsing duplicates.
+
+forward <id> --to a@b.c passes a message on. The original is attached
+whole as message/rfc822, so its attachments survive byte for byte; the
+original's Cc and Bcc are dropped, and one over %d MiB is refused with its
+measured size rather than split.
+
+reply and forward print the derived audience — count first, then the
+addresses — before the message goes, since for a reply-all that is the
+one thing you did not type.
+`, cmd, briefkasten.MaxBulkIDs, briefkasten.MaxFetchBytes>>20, briefkasten.MaxAttachmentBytes>>20)
 		return 2
 	}
 	return 0
+}
+
+// deliverNow flushes the outbox and reports where the message ended up.
+// The CLI has no background worker, so a queued message that nothing
+// delivered would look sent and never leave.
+func deliverNow(
+	ctx context.Context, ob *briefkasten.Outbox, id string, stderr io.Writer, emit func(string, any),
+) int {
+	if _, err := ob.ProcessOnce(ctx); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	msg, _ := ob.Status(id)
+	emit(fmt.Sprintf("%s: %s", msg.State, id), map[string]any{"id": id, "state": msg.State})
+	return 0
+}
+
+// describeAudience states who a derived message reaches, count first.
+//
+// It is printed rather than prompted for because the CLI's line has
+// always been that the operator typing the command is the confirmation —
+// `send` does not prompt either. What they cannot have typed is the
+// recipient list of a reply-all, so the number is shown before the
+// message goes rather than discovered afterwards in the sent copy.
+func describeAudience(msg briefkasten.OutboundMessage) string {
+	recipients := msg.Recipients()
+	line := fmt.Sprintf("to %d recipient(s)", len(recipients))
+	if len(msg.Cc) > 0 || len(msg.Bcc) > 0 {
+		line += fmt.Sprintf(" (%d To, %d Cc, %d Bcc)", len(msg.To), len(msg.Cc), len(msg.Bcc))
+	}
+	return line + ": " + strings.Join(recipients, ", ")
+}
+
+// replyUsageTail is the argument summary each of the two answering
+// commands needs.
+func replyUsageTail(cmd string) string {
+	if cmd == "reply" {
+		return "--body B [--all] [--html H] [--attach FILE ...]"
+	}
+	return "--to a@b.c [--body B] [--html H]"
 }
 
 // repairOutbox recovers the outbox for the client commands that need a

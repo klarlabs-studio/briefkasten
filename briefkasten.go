@@ -46,8 +46,11 @@ type (
 	BulkMessage     = domain.BulkMessage
 	FetchResult     = domain.FetchResult
 	Sender          = domain.Sender
+	SelfAddresser   = domain.SelfAddresser
 	OutboundMessage = domain.OutboundMessage
 	Attachment      = domain.Attachment
+	// Original is a message a reply or forward is derived from.
+	Original = domain.Original
 	// Scope selects which slice of a mailbox a listing covers.
 	Scope = domain.Scope
 )
@@ -89,6 +92,13 @@ const MaxBulkIDs = domain.MaxBulkIDs
 // MaxFetchBytes caps the raw bytes one batched fetch may return in total.
 const MaxFetchBytes = domain.MaxFetchBytes
 
+// MaxAttachmentBytes caps one attachment — and so caps the original a
+// forward can carry, since a forward attaches it whole.
+const MaxAttachmentBytes = domain.MaxAttachmentBytes
+
+// MaxMessageBytes caps an outbound message's body plus attachments.
+const MaxMessageBytes = domain.MaxMessageBytes
+
 // MaxSummaryMessages caps how many messages one summary prompt embeds.
 const MaxSummaryMessages = domain.MaxSummaryMessages
 
@@ -102,7 +112,27 @@ type (
 	Switchable = application.Switchable
 	// SwitchableSender is a runtime-swappable outbound-sender decorator.
 	SwitchableSender = application.SwitchableSender
+	// Composer answers and forwards mail already in the mailbox: the
+	// caller names the message, never the recipients.
+	Composer = application.Composer
+	// ReplyRequest names the message a reply answers and what to say.
+	ReplyRequest = application.ReplyRequest
+	// ForwardRequest names the message a forward passes on and who to.
+	ForwardRequest = application.ForwardRequest
 )
+
+// NewComposer binds the mailbox replies are read from to the outbox they
+// leave through.
+func NewComposer(svc *Service, ob *Outbox) *Composer { return application.NewComposer(svc, ob) }
+
+// ErrNoReplyTarget refuses a reply or forward that would have nobody to
+// go to — most often a reply to mail this outbox sent itself.
+var ErrNoReplyTarget = domain.ErrNoReplyTarget
+
+// ErrForwardTooLarge refuses a forward whose original is over the
+// attachment ceiling. A forward carries the original whole, so it cannot
+// be split.
+var ErrForwardTooLarge = domain.ErrForwardTooLarge
 
 // NewService wires the shared use cases over a default mailbox and named
 // accounts.

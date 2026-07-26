@@ -32,13 +32,20 @@ func drop(t *testing.T, root, name, content string) {
 	}
 }
 
-// fakeSender records deliveries.
-type fakeSender struct{ sent []domain.OutboundMessage }
+// fakeSender records deliveries. It names itself like the real
+// transports do, so the reply tests exercise the self-exclusion rule
+// rather than silently skipping it.
+type fakeSender struct {
+	from string
+	sent []domain.OutboundMessage
+}
 
 func (f *fakeSender) Send(_ context.Context, msg domain.OutboundMessage) error {
 	f.sent = append(f.sent, msg)
 	return nil
 }
+
+func (f *fakeSender) From() string { return f.from }
 
 // newOutbox builds an application outbox over a temp dir store.
 func newOutbox(t *testing.T, sender domain.Sender) *application.Outbox {

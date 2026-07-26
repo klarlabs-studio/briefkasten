@@ -53,4 +53,11 @@ func (d *Sender) Send(_ context.Context, msg domain.OutboundMessage) error {
 	return nil
 }
 
-var _ domain.Sender = (*Sender)(nil)
+// From reports the bound sender address — the address a reply derived
+// here must never send to. See domain.SelfAddresser.
+func (d *Sender) From() string { return d.from }
+
+var (
+	_ domain.Sender        = (*Sender)(nil)
+	_ domain.SelfAddresser = (*Sender)(nil)
+)
