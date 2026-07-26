@@ -3,6 +3,13 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Re-drive a release that published its artifacts and then failed on a later
+  # step, without re-tagging. v0.31.0 did exactly that: all 22 signed artifacts
+  # and SBOMs uploaded, then the Homebrew cask push failed, leaving the release
+  # correct and `brew upgrade` a version behind with no way to finish the job
+  # from CI. Dispatch against the TAG (`--ref v0.31.0`), not a branch: goreleaser
+  # reads the config and version from the ref it runs on.
+  workflow_dispatch:
 
 # Default for anything added later: read-only. The release job widens this for
 # itself, and only for itself.
