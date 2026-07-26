@@ -100,6 +100,22 @@
   .note { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin-bottom: 0.8rem; font-size: 0.8rem; color: var(--ink-soft); }
   .note:empty { display: none; }
   .rule { border-top: 2px solid var(--ink); margin: 1.2rem 0 0.8rem; }
+  .label { font-family: Georgia, "Times New Roman", serif; font-weight: 600; }
+  .out {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem;
+    border-bottom: 1px dashed var(--rule); padding: 0.4rem 0; font-size: 0.82rem;
+  }
+  .out .state {
+    font-size: 0.66rem; letter-spacing: 0.08em; text-transform: uppercase;
+    border: 1px solid var(--rule); padding: 0.05rem 0.35rem; color: var(--ink-soft);
+  }
+  .out .state.failed { border-color: var(--red); color: var(--red); }
+  .out .state.queued, .out .state.sending { border-color: var(--amber); color: var(--amber); }
+  .out .state.sent { border-color: var(--green); color: var(--green); }
+  .out .oid { font: 0.76rem ui-monospace, Menlo, monospace; color: var(--ink-soft); word-break: break-all; }
+  .msg .pick { margin-right: 0.5rem; }
+  .msg.picked { border-left-color: var(--amber); }
+  #bulkBar[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -116,15 +132,31 @@
       <option value="all">All</option>
     </select>
     <button id="refresh">Refresh</button>
+    <button id="folderDelete">Delete folder</button>
     <span class="status" id="status"></span>
   </div>
   <p class="hint" id="curation"></p>
+
+  <form class="bar" id="folderForm">
+    <input id="folderName" placeholder="New folder name" aria-label="Name for a new folder" />
+    <button type="submit">Create folder</button>
+    <span class="status" id="folderStatus"></span>
+  </form>
 
   <form class="bar" id="searchForm">
     <input id="query" type="search" placeholder="Search this folder" aria-label="Search mail" />
     <button type="submit">Search</button>
   </form>
   <p class="note" id="note"></p>
+
+  <div class="bar" id="bulkBar" hidden>
+    <span class="label" id="bulkCount"></span>
+    <button id="bulkSeen">Mark seen</button>
+    <button id="bulkArchive">Archive</button>
+    <button id="bulkDelete">Delete</button>
+    <button id="bulkClear">Clear</button>
+    <span class="status" id="bulkStatus"></span>
+  </div>
 
   <div id="list"></div>
 
@@ -141,6 +173,16 @@
       <span class="status" id="sendStatus"></span>
     </div>
   </form>
+
+  <div class="rule"></div>
+  <section>
+    <div class="bar">
+      <span class="label">Outbox</span>
+      <button id="outboxRefresh">Refresh</button>
+      <span class="status" id="outboxStatus"></span>
+    </div>
+    <div id="outbox"></div>
+  </section>
 
 <script>
 // Minimal MCP Apps bridge: JSON-RPC 2.0 over postMessage to the host.
@@ -274,6 +316,191 @@ async function loadFolders() {
   }
 }
 
+// Folder management. Both tools are confirm-gated in the host, and both
+// enforce their own rules server-side -- a name that would escape the
+// mailbox, the inbox itself, and whichever folders archive and delete
+// file into are all refused there. None of that is re-implemented here:
+// this surface asks, and reports the refusal in the server's own words.
+// The one thing it does locally is refuse an empty name, which is not a
+// rule so much as an incomplete form.
+//
+// Delete acts on the folder currently being read, so the thing being
+// removed is the thing on screen. A folder holding mail is refused with
+// its message count -- briefkasten never destroys mail, so emptying it
+// first is the human's job, one soft move at a time.
+async function folderAction(tool, name, statusID, then) {
+  const status = document.getElementById(statusID);
+  status.className = 'status';
+  status.textContent = 'asking…';
+  try {
+    await callTool(tool, { name }, CONFIRM_TIMEOUT);
+    status.textContent = 'done.';
+    then();
+  } catch (e) {
+    status.className = 'status bad';
+    status.textContent = e.message;
+  }
+}
+
+// reloadFolders rebuilds the selector after a create or delete, keeping
+// the current selection if it still exists. Rebuilt rather than patched:
+// the server resolves a name into its own folder space ("Work" may land
+// as "INBOX.Work"), so what was created is not necessarily what was
+// typed, and only the server can say.
+async function reloadFolders(keep) {
+  const select = document.getElementById('folder');
+  const first = select.options[0];
+  select.replaceChildren(first);
+  await loadFolders();
+  if (keep && [...select.options].some((o) => o.value === keep)) select.value = keep;
+  refresh();
+}
+
+// Selection for batched curation. The backend has taken ids -- up to
+// MaxBulkIDs of them -- since bulk landed, and the host is elicited once
+// for the whole batch rather than once per message; clearing a morning's
+// mail one confirmation at a time was the thing that made the tools
+// exist. The cap is mirrored here so the refusal arrives before the
+// human is asked to approve a batch that cannot succeed.
+const MAX_BULK = 100;
+const picked = new Set();
+
+function bulkBar() {
+  const bar = document.getElementById('bulkBar');
+  const count = document.getElementById('bulkCount');
+  bar.hidden = picked.size === 0;
+  count.textContent = picked.size + ' selected';
+  const over = picked.size > MAX_BULK;
+  for (const id of ['bulkSeen', 'bulkArchive', 'bulkDelete']) {
+    document.getElementById(id).disabled = over;
+  }
+  const status = document.getElementById('bulkStatus');
+  if (over) {
+    status.className = 'status bad';
+    status.textContent = 'over the ' + MAX_BULK + ' cap — deselect ' + (picked.size - MAX_BULK);
+  } else if (status.textContent.startsWith('over the')) {
+    status.className = 'status';
+    status.textContent = '';
+  }
+}
+
+// bulk runs one tool over every selected id. The result is per id:
+// nothing is rolled back, so a partial failure is reported as one rather
+// than being flattened into "it worked" or "it didn't".
+async function bulk(tool, verb) {
+  const status = document.getElementById('bulkStatus');
+  const ids = [...picked];
+  if (!ids.length) return;
+  status.className = 'status';
+  status.textContent = verb + ' ' + ids.length + '…';
+  const buttons = document.querySelectorAll('#bulkBar button');
+  buttons.forEach((b) => (b.disabled = true));
+  try {
+    const res = toolJSON(await callTool(tool, withFolder({ ids }),
+      tool === 'email.mark_seen' ? READ_TIMEOUT : CONFIRM_TIMEOUT));
+    const failed = Array.isArray(res.failed) ? res.failed : [];
+    const done = res.total - failed.length;
+    if (failed.length) {
+      status.className = 'status bad';
+      // Name the first failure rather than only counting them: "3 failed"
+      // gives the human nothing to act on.
+      status.textContent = done + ' ' + verb + ', ' + failed.length + ' failed — ' +
+        failed[0].id + ': ' + failed[0].error;
+    } else {
+      status.textContent = done + ' ' + verb + '.';
+    }
+    picked.clear();
+    refresh();
+  } catch (e) {
+    status.className = 'status bad';
+    status.textContent = e.message;
+  } finally {
+    buttons.forEach((b) => (b.disabled = false));
+    bulkBar();
+  }
+}
+
+// The outbox is the one place a send can go wrong after the human has
+// approved it: email.send/reply/forward return an id and then deliver
+// asynchronously, so without this a message that failed to leave is
+// invisible in the surface that queued it. States come from the
+// email://outbox resource — a plain read, like the folder list — rather
+// than polling email.send_status per id.
+//
+// Order is deliberate: failures first, then work in flight, then sent.
+// The interesting end of an outbox is the end that still needs someone.
+const OUTBOX_STATES = ['failed', 'sending', 'queued', 'sent'];
+
+async function loadOutbox() {
+  const panel = document.getElementById('outbox');
+  const status = document.getElementById('outboxStatus');
+  status.className = 'status';
+  status.textContent = 'loading…';
+  let summary = null;
+  try {
+    summary = resourceJSON(await rpc('resources/read', { uri: 'email://outbox' }, READ_TIMEOUT));
+  } catch (e) {
+    status.className = 'status bad';
+    status.textContent = e.message;
+    return;
+  }
+  panel.replaceChildren();
+  if (!summary || typeof summary !== 'object') {
+    status.textContent = '';
+    return;
+  }
+  let total = 0;
+  for (const state of OUTBOX_STATES) {
+    const ids = Array.isArray(summary[state]) ? summary[state] : [];
+    total += ids.length;
+    for (const id of ids) {
+      if (typeof id !== 'string' || !id) continue;
+      const row = document.createElement('div');
+      row.className = 'out';
+      const tag = document.createElement('span');
+      tag.className = 'state ' + state;
+      tag.textContent = state;
+      const oid = document.createElement('span');
+      // Outbox ids are server data: a text node, never markup.
+      oid.className = 'oid';
+      oid.textContent = id;
+      row.append(tag, oid);
+      // Only a failure is actionable from here. Retry re-queues the same
+      // message the human already approved, so it does not ask again.
+      if (state === 'failed') {
+        const retry = document.createElement('button');
+        retry.textContent = 'Retry';
+        const note = document.createElement('span');
+        note.className = 'status';
+        retry.onclick = async () => {
+          retry.disabled = true;
+          note.className = 'status';
+          note.textContent = 're-queuing…';
+          try {
+            const res = toolJSON(await callTool('email.retry', { id }, READ_TIMEOUT));
+            note.textContent = res && res.state ? res.state : 'queued';
+            loadOutbox();
+          } catch (e) {
+            retry.disabled = false;
+            note.className = 'status bad';
+            note.textContent = e.message;
+          }
+        };
+        row.append(retry, note);
+      }
+      panel.appendChild(row);
+    }
+  }
+  if (!total) {
+    panel.replaceChildren(
+      Object.assign(document.createElement('p'), { className: 'empty', textContent: 'Nothing queued.' }),
+    );
+  }
+  const failed = Array.isArray(summary.failed) ? summary.failed.length : 0;
+  status.className = failed ? 'status bad' : 'status';
+  status.textContent = failed ? failed + ' failed' : total + ' queued or sent';
+}
+
 // action wires a button to a tool call over one message. Archive and
 // delete carry no confirm flag: the host elicits the human, which is the
 // whole point of the gate — the UI must not answer it on their behalf.
@@ -358,6 +585,7 @@ function composer(mode, id, row) {
       }
       note.textContent = 'queued: ' + res.id;
       form.querySelectorAll('input, textarea, button').forEach((f) => (f.disabled = true));
+      loadOutbox();
     } catch (e) {
       // A declined send is reported here in the host's own words: the
       // refusal is the answer, not a bug to swallow.
@@ -418,6 +646,12 @@ async function refresh() {
     }
     status.textContent = total + ' ' + (scope === 'all' ? 'messages' : scope);
     searchNote(total);
+    // Drop selections for anything no longer listed: a batch must never
+    // act on a message the human can no longer see.
+    for (const id of [...picked]) {
+      if (!ids.includes(id)) picked.delete(id);
+    }
+    bulkBar();
     if (!ids.length) {
       list.replaceChildren(
         Object.assign(document.createElement('p'), {
@@ -434,8 +668,21 @@ async function refresh() {
       const el = document.createElement('article');
       el.className = isUnread ? 'msg' : 'msg read';
       el.innerHTML =
-        '<header><div><div class="subject"><span class="badge"></span></div><div class="from"></div></div>' +
+        '<header><div><div class="subject"><input class="pick" type="checkbox" />' +
+        '<span class="badge"></span></div><div class="from"></div></div>' +
         '<div class="actions"></div></header><pre></pre><div class="composer"></div><p class="error"></p>';
+      // Selection survives a re-render only for ids still on show; the
+      // set is cleared after every batch, so a stale id cannot ride along
+      // into the next one.
+      const pick = el.querySelector('.pick');
+      pick.checked = picked.has(id);
+      pick.setAttribute('aria-label', 'Select this message for a batch action');
+      if (pick.checked) el.classList.add('picked');
+      pick.onchange = () => {
+        if (pick.checked) picked.add(id); else picked.delete(id);
+        el.classList.toggle('picked', pick.checked);
+        bulkBar();
+      };
       const badge = el.querySelector('.badge');
       badge.className = isUnread ? 'badge unread' : 'badge';
       badge.textContent = isUnread ? 'unread' : 'read';
@@ -494,14 +741,54 @@ document.getElementById('compose').onsubmit = async (ev) => {
     const res = toolJSON(await callTool('email.send', args, CONFIRM_TIMEOUT));
     sendStatus.textContent = 'queued: ' + res.id;
     ev.target.reset();
+    // The message it just queued is now the newest thing in the outbox,
+    // so show it there rather than leaving the panel a refresh behind.
+    loadOutbox();
   } catch (e) {
     sendStatus.className = 'status bad';
     sendStatus.textContent = e.message;
   }
 };
 
+document.getElementById('folderForm').onsubmit = (ev) => {
+  ev.preventDefault();
+  const input = document.getElementById('folderName');
+  const name = input.value.trim();
+  if (!name) return;
+  folderAction('email.folder_create', name, 'folderStatus', () => {
+    input.value = '';
+    // Select what was just made, so the next thing read is it. The server
+    // may have resolved the name into its own space, so ask rather than
+    // assume the typed name is the one that now exists.
+    reloadFolders(name);
+  });
+};
+document.getElementById('folderDelete').onclick = () => {
+  const folder = document.getElementById('folder').value;
+  const status = document.getElementById('folderStatus');
+  if (!folder) {
+    // The default selection is the inbox, which is refused server-side
+    // anyway; saying so here is clearer than round-tripping for it.
+    status.className = 'status bad';
+    status.textContent = 'Select a folder to delete — the inbox cannot be removed.';
+    return;
+  }
+  folderAction('email.folder_delete', folder, 'folderStatus', () => reloadFolders(''));
+};
+
+document.getElementById('outboxRefresh').onclick = loadOutbox;
+document.getElementById('bulkSeen').onclick = () => bulk('email.mark_seen', 'marked seen');
+document.getElementById('bulkArchive').onclick = () => bulk('email.archive', 'archived');
+document.getElementById('bulkDelete').onclick = () => bulk('email.delete', 'deleted');
+document.getElementById('bulkClear').onclick = () => {
+  picked.clear();
+  document.getElementById('bulkStatus').textContent = '';
+  refresh();
+};
+
 loadFolders();
 refresh();
+loadOutbox();
 </script>
 </body>
 </html>

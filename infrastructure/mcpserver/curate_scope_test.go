@@ -231,3 +231,74 @@ func TestInboxUIAcceptsRepliesOnlyFromItsHost(t *testing.T) {
 		t.Error("a sandboxed host's \"null\" origin must not be pinned as the target")
 	}
 }
+
+// TestInboxUIShowsTheOutbox covers the gap that made a failed send
+// invisible: email.send/reply/forward return an id and then deliver
+// asynchronously, so a message that never left was only discoverable by
+// polling email.send_status for an id the UI had already forgotten.
+func TestInboxUIShowsTheOutbox(t *testing.T) {
+	client, _ := newClient(t)
+
+	page, err := client.ReadResource(InboxUIResourceURI)
+	if err != nil {
+		t.Fatalf("read UI resource: %v", err)
+	}
+	for _, want := range []string{
+		`id="outbox"`,      // the panel itself
+		"'email://outbox'", // read as a resource, not polled per id
+		"'email.retry'",    // ... and a failure can be re-queued from it
+		"'failed'",         // failures are listed first, not buried under sent
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("inbox UI does not contain %q — a failed send stays invisible", want)
+		}
+	}
+}
+
+// TestInboxUISelectsBatches covers the other half of the bulk work: the
+// tools have taken ids since bulk landed, but the UI could only ever send
+// one id at a time, so a human clearing a morning's mail confirmed once
+// per message -- the cost bulk exists to remove.
+func TestInboxUISelectsBatches(t *testing.T) {
+	client, _ := newClient(t)
+
+	page, err := client.ReadResource(InboxUIResourceURI)
+	if err != nil {
+		t.Fatalf("read UI resource: %v", err)
+	}
+	for _, want := range []string{
+		`id="bulkBar"`,   // the batch action bar
+		`class="pick"`,   // per-row selection
+		"{ ids }",        // ... sent as a batch, not id by id
+		"MAX_BULK = 100", // the domain cap mirrored, so the refusal precedes the prompt
+		"res.failed",     // per-id failures surfaced, since nothing is rolled back
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("inbox UI does not contain %q — it cannot act on a batch", want)
+		}
+	}
+}
+
+// TestInboxUIManagesFolders covers the last pair the UI could not reach.
+// The folder selector could switch between folders but not create or
+// remove one, so the only way to shape a mailbox from this surface was to
+// ask the model to call the tool.
+func TestInboxUIManagesFolders(t *testing.T) {
+	client, _ := newClient(t)
+
+	page, err := client.ReadResource(InboxUIResourceURI)
+	if err != nil {
+		t.Fatalf("read UI resource: %v", err)
+	}
+	for _, want := range []string{
+		"'email.folder_create'",
+		"'email.folder_delete'",
+		`id="folderForm"`,   // create takes a typed name
+		`id="folderDelete"`, // delete acts on the folder being read
+		"CONFIRM_TIMEOUT",   // both are confirm-gated in the host, so they get room for it
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("inbox UI does not contain %q — it cannot manage folders", want)
+		}
+	}
+}
