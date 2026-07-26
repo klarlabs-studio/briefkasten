@@ -192,8 +192,22 @@ BRIEFKASTEN_ADDR=:8090 BRIEFKASTEN_MAILDIR=./maildir briefkasten   # serve (defa
 Or install the release build:
 
 ```bash
-brew install klarlabs-studio/tap/briefkasten
+brew trust klarlabs-studio/tap                       # first time only
+brew install --cask klarlabs-studio/tap/briefkasten
 ```
+
+Homebrew refuses to load a cask from a third-party tap it has not been
+told to trust, and says so rather than installing:
+
+```
+Error: Refusing to load cask klarlabs-studio/tap/briefkasten from untrusted tap klarlabs-studio/tap.
+```
+
+`brew trust` is a per-machine decision and only needs making once for the
+tap, not once per tool. Briefkasten ships as a cask rather than a formula
+because it is a pre-compiled binary — Homebrew's own guidance — which is
+also why the install strips the quarantine attribute macOS puts on
+unnotarized downloads.
 
 ### Transports
 
