@@ -13,7 +13,9 @@ contract instead of binding to IMAP libraries:
 | `email.list_unread` | `{"limit?"}` → `{"ids": ["..."], "total": N}` — `email.list` with `scope=unread` |
 | `email.fetch` | `{"id"}` → `{"raw": "<base64 RFC 5322>"}`, or `{"ids": [...]}` → `{"fetched": [{"id", "raw"}], "failed": [...], "total": N}` — read or unread; never sets `\Seen`; a batch is refused whole if it measures over 25 MiB |
 | `email.mark_seen` | `{"id"}` → `{"ok": true}`, or `{"ids": [...]}` → `{"marked": [...], "failed": [...], "total": N}` — message won't be listed again; idempotent, so re-acknowledging read mail is not an error |
-| `email.send`* | `{"to": [...], "subject", "body", "html_body?", "attachments?": [{"filename", "content_type", "content": "<base64>"}]}` → `{"id", "state": "queued"}` — attachments ≤ 10 MiB each, ≤ 25 MiB per message |
+| `email.send`* | `{"to": [...], "subject", "body", "cc?", "bcc?", "html_body?", "attachments?": [{"filename", "content_type", "content": "<base64>"}], "confirm?"}` → `{"id", "state": "queued"}` — **human-confirmed**; `bcc` travels in the SMTP envelope only and is never rendered into the message; attachments ≤ 10 MiB each, ≤ 25 MiB per message |
+| `email.reply`* | `{"id", "body", "all?", "html_body?", "attachments?", "confirm?"}` → `{"id", "state": "queued"}` — **human-confirmed**; you pass the *message id*, never recipients: they are derived from the original (`Reply-To` else `From`; `all` adds its To + Cc as Cc, never its Bcc, never this mailbox) and the reply threads via `In-Reply-To`/`References` |
+| `email.forward`* | `{"id", "to": [...], "body?", "html_body?", "confirm?"}` → `{"id", "state": "queued"}` — **human-confirmed**; the original is attached whole as `message/rfc822`, so its own attachments survive byte for byte; one over 10 MiB is refused with its measured size |
 | `email.send_status`* | `{"id"}` → `{"state": "queued\|sending\|sent\|failed", "attempts", "error?"}` |
 | `email.retry`* | `{"id"}` → `{"id", "state": "queued"}` — re-queue a failed send |
 | `email.search` | `{"query", "scope?", "folder?", "account?", "limit?"}` → `{"ids": [...], "total": N, "scope": "unread"}` — case-insensitive; IMAP searches server-side |
@@ -103,6 +105,68 @@ An unknown id is rejected as a bad id, not silently accepted — so an
 `{"ok": true}` from `archive` or `delete` means a message actually
 moved.
 
+### Reply, reply-all, forward
+
+`email.reply` and `email.forward` take **the id of the message being
+answered, never a recipient list**. The server reads the original and
+derives the audience, so the arithmetic lives in one tested place instead
+of being re-invented by each caller:
+
+| Rule | Why |
+|---|---|
+| To = the original's `Reply-To`, else its `From` | a sender who set `Reply-To` asked for answers elsewhere; ignoring it lands the reply in an unattended mailbox |
+| `all` additionally puts the original's To + Cc into Cc | everyone who could already see each other — and nobody who could not |
+| **Bcc is never a source of recipients** | if you were Bcc'd you cannot see the others; where a Bcc list *is* visible (a Sent-folder copy), replying to it would broadcast a list its sender deliberately hid. `forward` drops it for the same reason |
+| the configured `outbox.from` is excluded from every derived set | compared on the addr-spec, lowercased — a display name cannot smuggle it back in |
+| an address in both To and Cc appears once | deduplicated on the addr-spec across the whole derived set |
+| `In-Reply-To` = the original's `Message-Id`; `References` = its `References` + that id | so the reply threads instead of starting a new conversation in every client |
+| no `Message-Id` on the original ⇒ **no threading headers at all** | a fabricated parent threads the conversation onto a message that never existed; an unthreaded reply merely shows up on its own |
+| `Re:` / `Fwd:` are added only when absent (case-insensitive), and an existing prefix is left as written | no `Re: Re: Re:`, and a correspondent's `AW:` is not rewritten into our house style |
+| every derived address is validated exactly like a caller-supplied one | it came out of a message's headers, which makes it attacker-supplied data |
+
+A forward carries the original as a `message/rfc822` attachment rather
+than re-rendering it inline. Re-encoding means decoding every part and
+encoding it again, and whatever the renderer does not model — an inline
+image, a signature, a part whose transfer encoding matters — is lost in
+the round trip. Attached whole, the recipient gets the bytes that
+arrived. Because the original cannot then be split, one over the 10 MiB
+attachment ceiling is refused with its measured size, the way an
+oversized `email.fetch` batch is.
+
+**Bcc is never a rendered header.** `email.send` accepts `bcc`, and those
+addresses reach the SMTP envelope (`RCPT TO`) and nothing else. A Bcc
+that appeared in the message would not be blind: the header travels with
+the message, so it would show the whole hidden list to exactly the people
+it was hidden from — and the sender would not notice, because their own
+copy looks correct.
+
+#### The confirmation prompt leads with the count
+
+Sending is the irreversible operation, and a reply-all can expand the
+audience by two orders of magnitude from a request that looks identical
+("reply to everyone with…" is one sentence in an email body — the
+injection [SECURITY.md](SECURITY.md) describes). So the prompt states the
+number of people first, breaks it down by field, samples a few addresses,
+and calls the Bcc count out on its own:
+
+```
+Send this reply to 80 recipients? (2 To, 5 Cc, 73 Bcc) — alice@example.com,
+bob@example.com, cc000@example.com, cc001@example.com, cc002@example.com and
+75 more. Subject: "Re: Q3 planning". 73 of them are Bcc — hidden from every
+other recipient and from each other, so that part of the audience cannot be
+checked by eye. Sending cannot be undone.
+```
+
+Eighty addresses printed in full would bury the one number a human can
+actually verify, so the list is a sample. The Bcc count is stated
+separately because those addresses appear in no header: if it is not
+said here it is said nowhere.
+
+There is deliberately **no cap on recipients**. A reply-all to a large
+thread is ordinary mail, and a cap would only teach callers to split one
+send into batches that each understate the audience. Visibility is the
+control.
+
 \* Sending registers only when an outbox is configured.
 
 Beyond tools, the full MCP surface:
@@ -111,7 +175,7 @@ Beyond tools, the full MCP surface:
 |---|---|
 | Resources | `email://inbox`, `email://inbox/{id}` (raw RFC 5322), `email://inbox/{id}/headers` (parsed from/to/subject/date/message_id — triage without fetching the body), `email://outbox`, `email://outbox/{id}`, `email://folders` (folders plus the curation destinations and how each was decided), `email://accounts` — read state without spending tool calls; `{id}` serves and completes read and unread ids alike |
 | Prompts | `summarize_inbox(count?)` (embeds up to `count` unread messages, default 20, capped at 100 and clamped rather than refused, each truncated at 16 KiB), `draft_reply(id)` (embeds the original — read or unread — truncated at 16 KiB) |
-| Annotations | read tools are `readOnlyHint`, `mark_seen` is `idempotentHint`, `config.set` and the folder tools are `destructiveHint` |
+| Annotations | read tools are `readOnlyHint`, `mark_seen` is `idempotentHint`, `config.set`, the sending tools and the folder tools are `destructiveHint` |
 | Instructions | the consumption contract (mark seen only after successful processing) ships as server instructions |
 | **MCP Apps UI** | `ui://briefkasten/inbox` — an interactive inbox (switch between unread/read/all, read a message, mark seen, archive, delete, compose) rendered by hosts supporting the MCP Apps extension; linked from `email.list_unread` and `email.send_status` |
 
@@ -178,7 +242,9 @@ briefkasten folders [--curation]   # --curation: where archive/delete would file
 briefkasten folders --create NAME  # idempotent; namespace-aware on IMAP
 briefkasten folders --delete NAME  # empty folders only; prompts y/N, --yes skips
 briefkasten profiles          # names switchable via config.set {"profile": ...}
-briefkasten send   --to a@b.c --subject S --body B [--html '<p>H</p>'] [--attach file.pdf ...]
+briefkasten send   --to a@b.c --subject S --body B [--cc x@y.z] [--bcc h@i.j] [--html '<p>H</p>'] [--attach file.pdf ...]
+briefkasten reply  <id> --body B [--all] [--html '<p>H</p>'] [--attach file.pdf ...]
+briefkasten forward <id> --to a@b.c [--body B] [--html '<p>H</p>']
 briefkasten retry  <id>       # re-queue a failed send and deliver
 briefkasten outbox            # outbound ids by lifecycle state
 briefkasten archive <id> [id ...]   # prompts y/N once; --yes to skip
@@ -210,6 +276,20 @@ base64-encoded, plus `failed`), which is also what a single id returns
 under `--json`. A batch measuring over 25 MiB is refused before anything
 is read, and a partly failed batch exits non-zero with each unreadable
 id named on stderr.
+
+`reply` and `forward` take no recipients: they read the message and
+derive them by the rules above, then print the derived audience — count
+first, then the addresses — before the message goes, since that is the
+one thing the operator did not type:
+
+```
+$ briefkasten reply --all --body 'Tuesday works.' orig.eml
+to 3 recipient(s): "Alice" <alice@example.com>, "Bob" <bob@example.com>, carol@example.com
+sent: 6f1c…
+```
+
+`--bcc` on `send` is envelope-only: the address is delivered to and never
+written into the message, so no other recipient can see it.
 
 `--version` answers before any config is read, so it works on a machine
 where nothing is set up yet:
@@ -404,7 +484,7 @@ so clients can negotiate before presenting credentials.
 
 ```yaml
 outbox:
-  dir: ./outbox             # lifecycle state lives here; enables email.send
+  dir: ./outbox             # lifecycle state lives here; enables email.send/reply/forward
   from: nexa@local.example
   deliver_dir: ./delivery   # DirSender: .eml into delivery/new (local loop)
   smtp:                     # set addr to deliver over SMTP instead
@@ -420,8 +500,10 @@ under `outbox/<state>/`, so a restart resumes where it stopped. Startup
 recovery repairs an unclean shutdown: a message stranded mid-send moves to
 `failed` (the wire outcome is unknowable — `email.retry` re-queues it
 deliberately rather than risking a silent duplicate send). The worker
-delivers asynchronously; `email.send` returns immediately with the outbox
-id. SMTP delivery is fortify-wrapped (timeout, exponential-backoff retry).
+delivers asynchronously; `email.send`, `email.reply` and `email.forward`
+all return immediately with the outbox id. `from` is also the address
+excluded from every derived reply recipient set — the transport reports
+it, so the reply rules and the `From:` header can never disagree. SMTP delivery is fortify-wrapped (timeout, exponential-backoff retry).
 Env overrides: `BRIEFKASTEN_OUTBOX_DIR` / `_FROM` / `_DELIVER_DIR`,
 `BRIEFKASTEN_SMTP_ADDR` / `_USER` / `_PASSWORD` / `_INSECURE`.
 

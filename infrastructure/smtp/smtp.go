@@ -150,7 +150,11 @@ func (s *Sender) deliver(ctx context.Context, msg domain.OutboundMessage) (bool,
 	// SendMail returns only after the reply to end-of-DATA, so any error it
 	// yields — including one raised mid-body — happened while the message was
 	// still ours to resend.
-	if err := c.SendMail(s.cfg.From, msg.To, bytes.NewReader(raw)); err != nil {
+	//
+	// The recipient list is the envelope's, not the header's: Cc and Bcc
+	// recipients only ever receive the message because their addresses
+	// are given here, and a Bcc appears nowhere else at all.
+	if err := c.SendMail(s.cfg.From, msg.Recipients(), bytes.NewReader(raw)); err != nil {
 		return false, fmt.Errorf("smtp send: %w", classify(err))
 	}
 
@@ -172,4 +176,11 @@ func (s *Sender) dial() (*smtp.Client, error) {
 	}
 }
 
-var _ domain.Sender = (*Sender)(nil)
+// From reports the envelope and header sender — the address a reply
+// derived here must never send to. See domain.SelfAddresser.
+func (s *Sender) From() string { return s.cfg.From }
+
+var (
+	_ domain.Sender        = (*Sender)(nil)
+	_ domain.SelfAddresser = (*Sender)(nil)
+)

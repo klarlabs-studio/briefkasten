@@ -37,4 +37,20 @@ func (s *SwitchableSender) Send(ctx context.Context, msg domain.OutboundMessage)
 	return sender.Send(ctx, msg)
 }
 
-var _ domain.Sender = (*SwitchableSender)(nil)
+// From reports the current sender's address, so a reply derived while a
+// swap is pending excludes the address the message will actually leave
+// from rather than one that has already been replaced.
+func (s *SwitchableSender) From() string {
+	s.mu.RLock()
+	sender := s.sender
+	s.mu.RUnlock()
+	if a, ok := sender.(domain.SelfAddresser); ok {
+		return a.From()
+	}
+	return ""
+}
+
+var (
+	_ domain.Sender        = (*SwitchableSender)(nil)
+	_ domain.SelfAddresser = (*SwitchableSender)(nil)
+)

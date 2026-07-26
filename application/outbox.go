@@ -95,6 +95,16 @@ func (o *Outbox) Enqueue(msg domain.OutboundMessage) (string, error) {
 	return msg.ID, nil
 }
 
+// From reports the address mail leaves this outbox from, or "" when the
+// transport cannot name one. See domain.SelfAddresser: it is what a
+// derived reply excludes from its recipients.
+func (o *Outbox) From() string {
+	if a, ok := o.sender.(domain.SelfAddresser); ok {
+		return a.From()
+	}
+	return ""
+}
+
 // Status returns the message with the given id, whatever its state.
 // Reading takes no cross-process lock: records are written atomically, so
 // a reader never sees half a record, and a status query must stay

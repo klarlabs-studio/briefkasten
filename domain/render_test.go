@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -60,6 +61,95 @@ func TestRenderPlainTextWhenNoHTMLOrAttachments(t *testing.T) {
 	body, _ := io.ReadAll(m.Body)
 	if !strings.Contains(string(body), "hello") {
 		t.Errorf("body %q missing text", body)
+	}
+}
+
+// Bcc must reach the envelope and nothing else. A Bcc header rendered
+// into the message would show every hidden recipient to all the others —
+// and to each other — which is the exact opposite of what the field
+// means. The sender would not notice, because their own copy looks
+// right.
+func TestBccIsNeverRenderedButIsInTheEnvelope(t *testing.T) {
+	msg := OutboundMessage{
+		ID: "b1", To: []string{"a@b.c"}, Cc: []string{"c@d.e"},
+		Bcc:     []string{"hidden@x.y", "quiet@x.y"},
+		Subject: "quiet", Body: "hello",
+	}
+	raw := mustRender(t, msg)
+
+	m := parse(t, raw)
+	if got := m.Header.Get("Bcc"); got != "" {
+		t.Errorf("rendered message carries a Bcc header %q — every recipient would see the hidden list", got)
+	}
+	// Not merely absent as a parsed header: the addresses must not appear
+	// anywhere in the bytes that go on the wire.
+	for _, hidden := range []string{"hidden@x.y", "quiet@x.y"} {
+		if strings.Contains(string(raw), hidden) {
+			t.Errorf("blind recipient %s appears in the rendered message:\n%s", hidden, raw)
+		}
+	}
+	// Cc, by contrast, is meant to be seen.
+	if got := m.Header.Get("Cc"); got != "c@d.e" {
+		t.Errorf("Cc = %q, want it rendered", got)
+	}
+
+	// The envelope is where they travel — that is the only reason they
+	// are delivered at all.
+	got := msg.Recipients()
+	want := []string{"a@b.c", "c@d.e", "hidden@x.y", "quiet@x.y"}
+	if len(got) != len(want) {
+		t.Fatalf("Recipients() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("Recipients()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// The envelope is a set: an address listed in two fields is one RCPT TO,
+// and the comparison ignores the display name.
+func TestRecipientsDeduplicateAcrossFields(t *testing.T) {
+	msg := OutboundMessage{
+		To:  []string{"Alice <a@b.c>"},
+		Cc:  []string{"A@B.C", "c@d.e"},
+		Bcc: []string{"c@d.e"},
+	}
+	if got := msg.Recipients(); len(got) != 2 {
+		t.Errorf("Recipients() = %v, want alice and c@d.e once each", got)
+	}
+}
+
+// Threading headers render when they exist, and References folds rather
+// than running past the line length RFC 5322 permits.
+func TestRenderThreadingHeaders(t *testing.T) {
+	refs := make([]string, 12)
+	for i := range refs {
+		refs[i] = fmt.Sprintf("<message-%02d-of-a-long-thread@example.com>", i)
+	}
+	msg := OutboundMessage{
+		ID: "t1", To: []string{"a@b.c"}, Subject: "Re: long", Body: "x",
+		InReplyTo: refs[len(refs)-1], References: refs,
+	}
+	raw := mustRender(t, msg)
+
+	m := parse(t, raw)
+	if got := m.Header.Get("In-Reply-To"); got != refs[len(refs)-1] {
+		t.Errorf("In-Reply-To = %q", got)
+	}
+	got := strings.Fields(m.Header.Get("References"))
+	if len(got) != len(refs) {
+		t.Fatalf("References has %d ids, want %d", len(got), len(refs))
+	}
+	for i := range refs {
+		if got[i] != refs[i] {
+			t.Errorf("References[%d] = %q, want %q", i, got[i], refs[i])
+		}
+	}
+	for _, line := range strings.Split(string(raw), "\r\n") {
+		if len(line) > 998 {
+			t.Fatalf("header line exceeds the RFC 5322 limit: %d chars", len(line))
+		}
 	}
 }
 

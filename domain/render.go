@@ -20,13 +20,28 @@ import (
 //   - body + HTMLBody               → multipart/alternative (text, html)
 //   - body + attachments            → multipart/mixed (text, attachment…)
 //   - body + HTMLBody + attachments → multipart/mixed (alternative, attachment…)
+//
+// Bcc is never written. A blind copy that appears in the message is not
+// blind: the header travels with the message to every recipient, so
+// rendering it would show the whole hidden list to exactly the people it
+// was hidden from — and would do so silently, since the sender sees
+// their own copy looking correct. The addresses reach the transport
+// through OutboundMessage.Recipients instead, which is the envelope and
+// only the envelope.
 func RenderRFC5322(from string, msg OutboundMessage, now time.Time) ([]byte, error) {
 	var b bytes.Buffer
 	fmt.Fprintf(&b, "From: %s\r\n", from)
 	fmt.Fprintf(&b, "To: %s\r\n", strings.Join(msg.To, ", "))
+	if len(msg.Cc) > 0 {
+		fmt.Fprintf(&b, "Cc: %s\r\n", strings.Join(msg.Cc, ", "))
+	}
 	fmt.Fprintf(&b, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", msg.Subject))
 	fmt.Fprintf(&b, "Date: %s\r\n", now.Format(time.RFC1123Z))
 	fmt.Fprintf(&b, "Message-Id: <%s@briefkasten>\r\n", msg.ID)
+	if msg.InReplyTo != "" {
+		fmt.Fprintf(&b, "In-Reply-To: %s\r\n", msg.InReplyTo)
+	}
+	writeReferences(&b, msg.References)
 	b.WriteString("MIME-Version: 1.0\r\n")
 
 	var err error
@@ -42,6 +57,30 @@ func RenderRFC5322(from string, msg OutboundMessage, now time.Time) ([]byte, err
 		return nil, err
 	}
 	return b.Bytes(), nil
+}
+
+// writeReferences writes the References header, folded at whitespace.
+//
+// A thread's id chain grows by one msg-id per round trip, so on a long
+// conversation it runs past the 998-character line RFC 5322 permits —
+// and an over-long header is not a cosmetic problem: it is a message
+// some servers refuse and some clients truncate. Folding is legal
+// anywhere between ids, since the header body is a whitespace-separated
+// list.
+func writeReferences(w io.Writer, refs []string) {
+	if len(refs) == 0 {
+		return
+	}
+	const limit = 76
+	line := "References:"
+	for _, ref := range refs {
+		if line != "" && len(line)+1+len(ref) > limit {
+			fmt.Fprintf(w, "%s\r\n", line)
+			line = "" // the continuation's leading space comes from the append below
+		}
+		line += " " + ref
+	}
+	fmt.Fprintf(w, "%s\r\n", line)
 }
 
 // renderPlain writes a single text/plain body.

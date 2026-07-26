@@ -313,3 +313,67 @@ func TestSMTPSenderUnreachableServerFails(t *testing.T) {
 		t.Error("unreachable server: want error")
 	}
 }
+
+// The envelope carries every recipient; the message carries only the
+// visible ones. A Bcc that reached the rendered message would be shown
+// to all the other recipients, which is the one thing the field exists
+// to prevent — so the two lists are asserted against each other here,
+// on the wire, rather than trusted to agree.
+func TestSMTPEnvelopeCarriesBccButTheMessageDoesNot(t *testing.T) {
+	backend := &memSMTP{}
+	addr := startSMTPServer(t, backend)
+
+	sender, err := NewSender(Config{Addr: addr, From: "nexa@local.example", Insecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = sender.Send(context.Background(), domain.OutboundMessage{
+		ID:      "m-bcc",
+		To:      []string{"visible@kanzlei.example"},
+		Cc:      []string{"copied@kanzlei.example"},
+		Bcc:     []string{"hidden@kanzlei.example", "quiet@kanzlei.example"},
+		Subject: "Belege",
+		Body:    "Anbei.",
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+
+	want := []string{
+		"visible@kanzlei.example", "copied@kanzlei.example",
+		"hidden@kanzlei.example", "quiet@kanzlei.example",
+	}
+	if len(backend.to) != len(want) {
+		t.Fatalf("RCPT TO = %v, want all %d recipients", backend.to, len(want))
+	}
+	for i, addr := range want {
+		if backend.to[i] != addr {
+			t.Errorf("RCPT TO[%d] = %q, want %q", i, backend.to[i], addr)
+		}
+	}
+
+	if !strings.Contains(backend.data, "Cc: copied@kanzlei.example") {
+		t.Errorf("Cc missing from the delivered message:\n%s", backend.data)
+	}
+	for _, hidden := range []string{"hidden@kanzlei.example", "quiet@kanzlei.example", "Bcc:"} {
+		if strings.Contains(backend.data, hidden) {
+			t.Errorf("delivered message exposes %q — every recipient would see the blind list:\n%s",
+				hidden, backend.data)
+		}
+	}
+}
+
+// The transport names itself, so a derived reply knows the one address
+// it must never send to.
+func TestSMTPSenderReportsItsOwnAddress(t *testing.T) {
+	sender, err := NewSender(Config{Addr: "localhost:25", From: "nexa@local.example", Insecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sender.From(); got != "nexa@local.example" {
+		t.Errorf("From() = %q", got)
+	}
+}

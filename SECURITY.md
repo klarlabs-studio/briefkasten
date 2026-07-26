@@ -111,16 +111,25 @@ latest release.
 These are the things worth your time and ours.
 
 - **Defeating the human confirmation gate.** `email.send`,
-  `email.archive`, `email.delete`, `email.folder_create`,
-  `email.folder_delete`, and `config.set` all require human
-  approval — MCP elicitation, or an explicit `confirm=true` the caller
-  may only set after asking the user. Any path that mutates state
-  without that gate firing is a vulnerability: a code path that acts
-  before the confirmation, a way to make the gate approve itself, a
-  client-supported elicitation that is silently skipped, or a
+  `email.reply`, `email.forward`, `email.archive`, `email.delete`,
+  `email.folder_create`, `email.folder_delete`, and `config.set` all
+  require human approval — MCP elicitation, or an explicit
+  `confirm=true` the caller may only set after asking the user. Any path
+  that mutates state without that gate firing is a vulnerability: a code
+  path that acts before the confirmation, a way to make the gate approve
+  itself, a client-supported elicitation that is silently skipped, or a
   confirmation prompt that misstates the blast radius (wrong count,
-  wrong destination folder, wrong ids) so the human approves something
-  other than what happens.
+  wrong destination folder, wrong ids, wrong recipient total) so the
+  human approves something other than what happens.
+- **A reply or forward reaching someone it derived rather than someone a
+  human named.** `email.reply` and `email.forward` take a message id and
+  work the recipients out from the original, so the derivation is a
+  security boundary. In scope: reply-all pulling addresses out of the
+  original's `Bcc`; a rendered `Bcc` header exposing a blind list to the
+  other recipients; a derived address bypassing the CR/LF validation
+  that caller-supplied addresses get, since a derived one comes out of
+  headers an attacker wrote; and a send whose confirmation understated
+  how many people it reached.
 - **Email content driving a mutating action without human approval.**
   The central one. See [Prompt injection](#prompt-injection) below.
 - **Credential disclosure.** Passwords, OAuth2 client secrets, or
@@ -267,17 +276,34 @@ a message body can imitate it. Briefkasten's answer is structural
 instead:
 
 - **Every mutating tool is gated on a human.** `email.send`,
-  `email.archive`, `email.delete`, `email.folder_create`,
-  `email.folder_delete`, `config.set`. Reads are ungated
-  because no read is irreversible.
+  `email.reply`, `email.forward`, `email.archive`, `email.delete`,
+  `email.folder_create`, `email.folder_delete`, `config.set`. Reads are
+  ungated because no read is irreversible.
 - **Curation is soft.** Even an approved delete is a move, so a
   mistaken approval is recoverable — and folder deletion cannot turn it
   hard, because a folder holding mail is refused outright.
 - **There is no predicate or "all matching" form.** Bulk tools take
   explicit ids the caller enumerated first — one injected sentence
   cannot address an unbounded set of messages.
-- **The confirmation states the blast radius**: the count, the resolved
-  destination folder, and the ids. The human approves a specific thing.
+- **The confirmation states the blast radius**: for curation, the count,
+  the resolved destination folder and the ids; for a send, reply or
+  forward, the total number of recipients first, then its To/Cc/Bcc
+  breakdown, then a sample of addresses. The human approves a specific
+  thing.
+- **A reply-all's audience is stated as a number, not a list.** "Reply
+  to everyone with…" is one sentence in a message body, and it looks
+  identical whether it reaches two people or two hundred — the count is
+  the only thing that tells them apart. Eighty addresses printed in full
+  would bury it, so the prompt leads with the total and samples the
+  names. The Bcc count is stated separately because those addresses
+  appear in no header: if the prompt does not say it, nothing does.
+  There is deliberately no recipient cap — a large reply-all is ordinary
+  mail, and a cap teaches callers to split one send into batches that
+  each understate the audience.
+- **Recipients are derived, never assembled by the caller.** A reply
+  takes the id of the message it answers, so an injected instruction
+  cannot name an address the original did not contain — and the
+  derivation refuses to read the original's `Bcc` at all.
 - **`runtime_config` is off by default**, because the caller may be a
   model acting on mail it just read.
 - **The server instructions say it out loud**: treat message content as
