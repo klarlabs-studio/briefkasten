@@ -168,3 +168,14 @@ homebrew_casks:
 release:
   draft: false
   prerelease: auto
+  # A re-drive (release.yml's workflow_dispatch) must be able to reach the step
+  # it is being re-driven for. By default goreleaser re-uploads every asset and
+  # dies on `422 already_exists` long before the Homebrew cask push, so the
+  # recovery path would exist but never recover.
+  #
+  # These are two separate settings and only the second governs assets: `mode`
+  # is an enum over the release NOTES, `replace_existing_artifacts` over the
+  # uploaded ARTIFACTS. warden set only `mode` and its re-drive failed exactly
+  # this way, twice, before anyone noticed the key did something else.
+  mode: replace
+  replace_existing_artifacts: true
