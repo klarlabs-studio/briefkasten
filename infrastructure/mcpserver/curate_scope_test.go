@@ -254,3 +254,27 @@ func TestInboxUIShowsTheOutbox(t *testing.T) {
 		}
 	}
 }
+
+// TestInboxUISelectsBatches covers the other half of the bulk work: the
+// tools have taken ids since bulk landed, but the UI could only ever send
+// one id at a time, so a human clearing a morning's mail confirmed once
+// per message -- the cost bulk exists to remove.
+func TestInboxUISelectsBatches(t *testing.T) {
+	client, _ := newClient(t)
+
+	page, err := client.ReadResource(InboxUIResourceURI)
+	if err != nil {
+		t.Fatalf("read UI resource: %v", err)
+	}
+	for _, want := range []string{
+		`id="bulkBar"`,   // the batch action bar
+		`class="pick"`,   // per-row selection
+		"{ ids }",        // ... sent as a batch, not id by id
+		"MAX_BULK = 100", // the domain cap mirrored, so the refusal precedes the prompt
+		"res.failed",     // per-id failures surfaced, since nothing is rolled back
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("inbox UI does not contain %q — it cannot act on a batch", want)
+		}
+	}
+}

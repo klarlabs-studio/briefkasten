@@ -113,6 +113,9 @@
   .out .state.queued, .out .state.sending { border-color: var(--amber); color: var(--amber); }
   .out .state.sent { border-color: var(--green); color: var(--green); }
   .out .oid { font: 0.76rem ui-monospace, Menlo, monospace; color: var(--ink-soft); word-break: break-all; }
+  .msg .pick { margin-right: 0.5rem; }
+  .msg.picked { border-left-color: var(--amber); }
+  #bulkBar[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -138,6 +141,15 @@
     <button type="submit">Search</button>
   </form>
   <p class="note" id="note"></p>
+
+  <div class="bar" id="bulkBar" hidden>
+    <span class="label" id="bulkCount"></span>
+    <button id="bulkSeen">Mark seen</button>
+    <button id="bulkArchive">Archive</button>
+    <button id="bulkDelete">Delete</button>
+    <button id="bulkClear">Clear</button>
+    <span class="status" id="bulkStatus"></span>
+  </div>
 
   <div id="list"></div>
 
@@ -294,6 +306,70 @@ async function loadFolders() {
   if (plan && plan.archive && plan.trash) {
     document.getElementById('curation').textContent =
       'Archive files into ' + plan.archive.folder + ' · Delete files into ' + plan.trash.folder + '.';
+  }
+}
+
+// Selection for batched curation. The backend has taken ids -- up to
+// MaxBulkIDs of them -- since bulk landed, and the host is elicited once
+// for the whole batch rather than once per message; clearing a morning's
+// mail one confirmation at a time was the thing that made the tools
+// exist. The cap is mirrored here so the refusal arrives before the
+// human is asked to approve a batch that cannot succeed.
+const MAX_BULK = 100;
+const picked = new Set();
+
+function bulkBar() {
+  const bar = document.getElementById('bulkBar');
+  const count = document.getElementById('bulkCount');
+  bar.hidden = picked.size === 0;
+  count.textContent = picked.size + ' selected';
+  const over = picked.size > MAX_BULK;
+  for (const id of ['bulkSeen', 'bulkArchive', 'bulkDelete']) {
+    document.getElementById(id).disabled = over;
+  }
+  const status = document.getElementById('bulkStatus');
+  if (over) {
+    status.className = 'status bad';
+    status.textContent = 'over the ' + MAX_BULK + ' cap — deselect ' + (picked.size - MAX_BULK);
+  } else if (status.textContent.startsWith('over the')) {
+    status.className = 'status';
+    status.textContent = '';
+  }
+}
+
+// bulk runs one tool over every selected id. The result is per id:
+// nothing is rolled back, so a partial failure is reported as one rather
+// than being flattened into "it worked" or "it didn't".
+async function bulk(tool, verb) {
+  const status = document.getElementById('bulkStatus');
+  const ids = [...picked];
+  if (!ids.length) return;
+  status.className = 'status';
+  status.textContent = verb + ' ' + ids.length + '…';
+  const buttons = document.querySelectorAll('#bulkBar button');
+  buttons.forEach((b) => (b.disabled = true));
+  try {
+    const res = toolJSON(await callTool(tool, withFolder({ ids }),
+      tool === 'email.mark_seen' ? READ_TIMEOUT : CONFIRM_TIMEOUT));
+    const failed = Array.isArray(res.failed) ? res.failed : [];
+    const done = res.total - failed.length;
+    if (failed.length) {
+      status.className = 'status bad';
+      // Name the first failure rather than only counting them: "3 failed"
+      // gives the human nothing to act on.
+      status.textContent = done + ' ' + verb + ', ' + failed.length + ' failed — ' +
+        failed[0].id + ': ' + failed[0].error;
+    } else {
+      status.textContent = done + ' ' + verb + '.';
+    }
+    picked.clear();
+    refresh();
+  } catch (e) {
+    status.className = 'status bad';
+    status.textContent = e.message;
+  } finally {
+    buttons.forEach((b) => (b.disabled = false));
+    bulkBar();
   }
 }
 
@@ -523,6 +599,12 @@ async function refresh() {
     }
     status.textContent = total + ' ' + (scope === 'all' ? 'messages' : scope);
     searchNote(total);
+    // Drop selections for anything no longer listed: a batch must never
+    // act on a message the human can no longer see.
+    for (const id of [...picked]) {
+      if (!ids.includes(id)) picked.delete(id);
+    }
+    bulkBar();
     if (!ids.length) {
       list.replaceChildren(
         Object.assign(document.createElement('p'), {
@@ -539,8 +621,21 @@ async function refresh() {
       const el = document.createElement('article');
       el.className = isUnread ? 'msg' : 'msg read';
       el.innerHTML =
-        '<header><div><div class="subject"><span class="badge"></span></div><div class="from"></div></div>' +
+        '<header><div><div class="subject"><input class="pick" type="checkbox" />' +
+        '<span class="badge"></span></div><div class="from"></div></div>' +
         '<div class="actions"></div></header><pre></pre><div class="composer"></div><p class="error"></p>';
+      // Selection survives a re-render only for ids still on show; the
+      // set is cleared after every batch, so a stale id cannot ride along
+      // into the next one.
+      const pick = el.querySelector('.pick');
+      pick.checked = picked.has(id);
+      pick.setAttribute('aria-label', 'Select this message for a batch action');
+      if (pick.checked) el.classList.add('picked');
+      pick.onchange = () => {
+        if (pick.checked) picked.add(id); else picked.delete(id);
+        el.classList.toggle('picked', pick.checked);
+        bulkBar();
+      };
       const badge = el.querySelector('.badge');
       badge.className = isUnread ? 'badge unread' : 'badge';
       badge.textContent = isUnread ? 'unread' : 'read';
@@ -609,6 +704,14 @@ document.getElementById('compose').onsubmit = async (ev) => {
 };
 
 document.getElementById('outboxRefresh').onclick = loadOutbox;
+document.getElementById('bulkSeen').onclick = () => bulk('email.mark_seen', 'marked seen');
+document.getElementById('bulkArchive').onclick = () => bulk('email.archive', 'archived');
+document.getElementById('bulkDelete').onclick = () => bulk('email.delete', 'deleted');
+document.getElementById('bulkClear').onclick = () => {
+  picked.clear();
+  document.getElementById('bulkStatus').textContent = '';
+  refresh();
+};
 
 loadFolders();
 refresh();
