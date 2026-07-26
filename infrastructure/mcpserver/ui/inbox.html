@@ -100,6 +100,19 @@
   .note { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin-bottom: 0.8rem; font-size: 0.8rem; color: var(--ink-soft); }
   .note:empty { display: none; }
   .rule { border-top: 2px solid var(--ink); margin: 1.2rem 0 0.8rem; }
+  .label { font-family: Georgia, "Times New Roman", serif; font-weight: 600; }
+  .out {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem;
+    border-bottom: 1px dashed var(--rule); padding: 0.4rem 0; font-size: 0.82rem;
+  }
+  .out .state {
+    font-size: 0.66rem; letter-spacing: 0.08em; text-transform: uppercase;
+    border: 1px solid var(--rule); padding: 0.05rem 0.35rem; color: var(--ink-soft);
+  }
+  .out .state.failed { border-color: var(--red); color: var(--red); }
+  .out .state.queued, .out .state.sending { border-color: var(--amber); color: var(--amber); }
+  .out .state.sent { border-color: var(--green); color: var(--green); }
+  .out .oid { font: 0.76rem ui-monospace, Menlo, monospace; color: var(--ink-soft); word-break: break-all; }
 </style>
 </head>
 <body>
@@ -141,6 +154,16 @@
       <span class="status" id="sendStatus"></span>
     </div>
   </form>
+
+  <div class="rule"></div>
+  <section>
+    <div class="bar">
+      <span class="label">Outbox</span>
+      <button id="outboxRefresh">Refresh</button>
+      <span class="status" id="outboxStatus"></span>
+    </div>
+    <div id="outbox"></div>
+  </section>
 
 <script>
 // Minimal MCP Apps bridge: JSON-RPC 2.0 over postMessage to the host.
@@ -274,6 +297,87 @@ async function loadFolders() {
   }
 }
 
+// The outbox is the one place a send can go wrong after the human has
+// approved it: email.send/reply/forward return an id and then deliver
+// asynchronously, so without this a message that failed to leave is
+// invisible in the surface that queued it. States come from the
+// email://outbox resource — a plain read, like the folder list — rather
+// than polling email.send_status per id.
+//
+// Order is deliberate: failures first, then work in flight, then sent.
+// The interesting end of an outbox is the end that still needs someone.
+const OUTBOX_STATES = ['failed', 'sending', 'queued', 'sent'];
+
+async function loadOutbox() {
+  const panel = document.getElementById('outbox');
+  const status = document.getElementById('outboxStatus');
+  status.className = 'status';
+  status.textContent = 'loading…';
+  let summary = null;
+  try {
+    summary = resourceJSON(await rpc('resources/read', { uri: 'email://outbox' }, READ_TIMEOUT));
+  } catch (e) {
+    status.className = 'status bad';
+    status.textContent = e.message;
+    return;
+  }
+  panel.replaceChildren();
+  if (!summary || typeof summary !== 'object') {
+    status.textContent = '';
+    return;
+  }
+  let total = 0;
+  for (const state of OUTBOX_STATES) {
+    const ids = Array.isArray(summary[state]) ? summary[state] : [];
+    total += ids.length;
+    for (const id of ids) {
+      if (typeof id !== 'string' || !id) continue;
+      const row = document.createElement('div');
+      row.className = 'out';
+      const tag = document.createElement('span');
+      tag.className = 'state ' + state;
+      tag.textContent = state;
+      const oid = document.createElement('span');
+      // Outbox ids are server data: a text node, never markup.
+      oid.className = 'oid';
+      oid.textContent = id;
+      row.append(tag, oid);
+      // Only a failure is actionable from here. Retry re-queues the same
+      // message the human already approved, so it does not ask again.
+      if (state === 'failed') {
+        const retry = document.createElement('button');
+        retry.textContent = 'Retry';
+        const note = document.createElement('span');
+        note.className = 'status';
+        retry.onclick = async () => {
+          retry.disabled = true;
+          note.className = 'status';
+          note.textContent = 're-queuing…';
+          try {
+            const res = toolJSON(await callTool('email.retry', { id }, READ_TIMEOUT));
+            note.textContent = res && res.state ? res.state : 'queued';
+            loadOutbox();
+          } catch (e) {
+            retry.disabled = false;
+            note.className = 'status bad';
+            note.textContent = e.message;
+          }
+        };
+        row.append(retry, note);
+      }
+      panel.appendChild(row);
+    }
+  }
+  if (!total) {
+    panel.replaceChildren(
+      Object.assign(document.createElement('p'), { className: 'empty', textContent: 'Nothing queued.' }),
+    );
+  }
+  const failed = Array.isArray(summary.failed) ? summary.failed.length : 0;
+  status.className = failed ? 'status bad' : 'status';
+  status.textContent = failed ? failed + ' failed' : total + ' queued or sent';
+}
+
 // action wires a button to a tool call over one message. Archive and
 // delete carry no confirm flag: the host elicits the human, which is the
 // whole point of the gate — the UI must not answer it on their behalf.
@@ -358,6 +462,7 @@ function composer(mode, id, row) {
       }
       note.textContent = 'queued: ' + res.id;
       form.querySelectorAll('input, textarea, button').forEach((f) => (f.disabled = true));
+      loadOutbox();
     } catch (e) {
       // A declined send is reported here in the host's own words: the
       // refusal is the answer, not a bug to swallow.
@@ -494,14 +599,20 @@ document.getElementById('compose').onsubmit = async (ev) => {
     const res = toolJSON(await callTool('email.send', args, CONFIRM_TIMEOUT));
     sendStatus.textContent = 'queued: ' + res.id;
     ev.target.reset();
+    // The message it just queued is now the newest thing in the outbox,
+    // so show it there rather than leaving the panel a refresh behind.
+    loadOutbox();
   } catch (e) {
     sendStatus.className = 'status bad';
     sendStatus.textContent = e.message;
   }
 };
 
+document.getElementById('outboxRefresh').onclick = loadOutbox;
+
 loadFolders();
 refresh();
+loadOutbox();
 </script>
 </body>
 </html>

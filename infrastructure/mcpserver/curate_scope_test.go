@@ -231,3 +231,26 @@ func TestInboxUIAcceptsRepliesOnlyFromItsHost(t *testing.T) {
 		t.Error("a sandboxed host's \"null\" origin must not be pinned as the target")
 	}
 }
+
+// TestInboxUIShowsTheOutbox covers the gap that made a failed send
+// invisible: email.send/reply/forward return an id and then deliver
+// asynchronously, so a message that never left was only discoverable by
+// polling email.send_status for an id the UI had already forgotten.
+func TestInboxUIShowsTheOutbox(t *testing.T) {
+	client, _ := newClient(t)
+
+	page, err := client.ReadResource(InboxUIResourceURI)
+	if err != nil {
+		t.Fatalf("read UI resource: %v", err)
+	}
+	for _, want := range []string{
+		`id="outbox"`,      // the panel itself
+		"'email://outbox'", // read as a resource, not polled per id
+		"'email.retry'",    // ... and a failure can be re-queued from it
+		"'failed'",         // failures are listed first, not buried under sent
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("inbox UI does not contain %q — a failed send stays invisible", want)
+		}
+	}
+}
