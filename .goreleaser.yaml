@@ -144,8 +144,12 @@ changelog:
       - "^test"
 
 homebrew_casks:
+  # The cask lives in the tap owned by the org that owns this repo. The
+  # token comes from the klarlabs-studio org secret, so it reaches org
+  # repos; pointing this at a personal tap is what made v0.31.0's cask
+  # step fail with a 403 while the release itself published fine.
   - repository:
-      owner: felixgeelhaar
+      owner: klarlabs-studio
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Casks
