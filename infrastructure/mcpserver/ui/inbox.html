@@ -132,9 +132,16 @@
       <option value="all">All</option>
     </select>
     <button id="refresh">Refresh</button>
+    <button id="folderDelete">Delete folder</button>
     <span class="status" id="status"></span>
   </div>
   <p class="hint" id="curation"></p>
+
+  <form class="bar" id="folderForm">
+    <input id="folderName" placeholder="New folder name" aria-label="Name for a new folder" />
+    <button type="submit">Create folder</button>
+    <span class="status" id="folderStatus"></span>
+  </form>
 
   <form class="bar" id="searchForm">
     <input id="query" type="search" placeholder="Search this folder" aria-label="Search mail" />
@@ -307,6 +314,46 @@ async function loadFolders() {
     document.getElementById('curation').textContent =
       'Archive files into ' + plan.archive.folder + ' · Delete files into ' + plan.trash.folder + '.';
   }
+}
+
+// Folder management. Both tools are confirm-gated in the host, and both
+// enforce their own rules server-side -- a name that would escape the
+// mailbox, the inbox itself, and whichever folders archive and delete
+// file into are all refused there. None of that is re-implemented here:
+// this surface asks, and reports the refusal in the server's own words.
+// The one thing it does locally is refuse an empty name, which is not a
+// rule so much as an incomplete form.
+//
+// Delete acts on the folder currently being read, so the thing being
+// removed is the thing on screen. A folder holding mail is refused with
+// its message count -- briefkasten never destroys mail, so emptying it
+// first is the human's job, one soft move at a time.
+async function folderAction(tool, name, statusID, then) {
+  const status = document.getElementById(statusID);
+  status.className = 'status';
+  status.textContent = 'asking…';
+  try {
+    await callTool(tool, { name }, CONFIRM_TIMEOUT);
+    status.textContent = 'done.';
+    then();
+  } catch (e) {
+    status.className = 'status bad';
+    status.textContent = e.message;
+  }
+}
+
+// reloadFolders rebuilds the selector after a create or delete, keeping
+// the current selection if it still exists. Rebuilt rather than patched:
+// the server resolves a name into its own folder space ("Work" may land
+// as "INBOX.Work"), so what was created is not necessarily what was
+// typed, and only the server can say.
+async function reloadFolders(keep) {
+  const select = document.getElementById('folder');
+  const first = select.options[0];
+  select.replaceChildren(first);
+  await loadFolders();
+  if (keep && [...select.options].some((o) => o.value === keep)) select.value = keep;
+  refresh();
 }
 
 // Selection for batched curation. The backend has taken ids -- up to
@@ -701,6 +748,32 @@ document.getElementById('compose').onsubmit = async (ev) => {
     sendStatus.className = 'status bad';
     sendStatus.textContent = e.message;
   }
+};
+
+document.getElementById('folderForm').onsubmit = (ev) => {
+  ev.preventDefault();
+  const input = document.getElementById('folderName');
+  const name = input.value.trim();
+  if (!name) return;
+  folderAction('email.folder_create', name, 'folderStatus', () => {
+    input.value = '';
+    // Select what was just made, so the next thing read is it. The server
+    // may have resolved the name into its own space, so ask rather than
+    // assume the typed name is the one that now exists.
+    reloadFolders(name);
+  });
+};
+document.getElementById('folderDelete').onclick = () => {
+  const folder = document.getElementById('folder').value;
+  const status = document.getElementById('folderStatus');
+  if (!folder) {
+    // The default selection is the inbox, which is refused server-side
+    // anyway; saying so here is clearer than round-tripping for it.
+    status.className = 'status bad';
+    status.textContent = 'Select a folder to delete — the inbox cannot be removed.';
+    return;
+  }
+  folderAction('email.folder_delete', folder, 'folderStatus', () => reloadFolders(''));
 };
 
 document.getElementById('outboxRefresh').onclick = loadOutbox;

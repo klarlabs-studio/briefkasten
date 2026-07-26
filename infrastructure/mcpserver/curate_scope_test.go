@@ -278,3 +278,27 @@ func TestInboxUISelectsBatches(t *testing.T) {
 		}
 	}
 }
+
+// TestInboxUIManagesFolders covers the last pair the UI could not reach.
+// The folder selector could switch between folders but not create or
+// remove one, so the only way to shape a mailbox from this surface was to
+// ask the model to call the tool.
+func TestInboxUIManagesFolders(t *testing.T) {
+	client, _ := newClient(t)
+
+	page, err := client.ReadResource(InboxUIResourceURI)
+	if err != nil {
+		t.Fatalf("read UI resource: %v", err)
+	}
+	for _, want := range []string{
+		"'email.folder_create'",
+		"'email.folder_delete'",
+		`id="folderForm"`,   // create takes a typed name
+		`id="folderDelete"`, // delete acts on the folder being read
+		"CONFIRM_TIMEOUT",   // both are confirm-gated in the host, so they get room for it
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("inbox UI does not contain %q — it cannot manage folders", want)
+		}
+	}
+}
