@@ -177,7 +177,7 @@ Beyond tools, the full MCP surface:
 | Prompts | `summarize_inbox(count?)` (embeds up to `count` unread messages, default 20, capped at 100 and clamped rather than refused, each truncated at 16 KiB), `draft_reply(id)` (embeds the original — read or unread — truncated at 16 KiB) |
 | Annotations | read tools are `readOnlyHint`, `mark_seen` is `idempotentHint`, `config.set`, the sending tools and the folder tools are `destructiveHint` |
 | Instructions | the consumption contract (mark seen only after successful processing) ships as server instructions |
-| **MCP Apps UI** | `ui://briefkasten/inbox` — an interactive inbox (switch between unread/read/all, read a message, mark seen, archive, delete, compose) rendered by hosts supporting the MCP Apps extension; linked from `email.list_unread` and `email.send_status` |
+| **MCP Apps UI** | `ui://briefkasten/inbox` — an interactive inbox rendered by hosts supporting the MCP Apps extension; linked from `email.list_unread` and `email.send_status`. Switch folders (read from `email://folders`, which also names where archive and delete file) and between unread/read/all, search the folder on show, read a message, mark seen, archive, delete, reply and reply-all in a composer that opens under the message, forward it to recipients you type, and compose with cc/bcc. Every gated send still goes through the host's own confirmation — the page never sends `confirm` on your behalf |
 
 Built on [mcp-go](https://github.com/klarlabs-studio/mcp-go).
 
