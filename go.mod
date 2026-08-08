@@ -11,7 +11,7 @@ require (
 	go.klarlabs.de/bolt v1.5.2
 	go.klarlabs.de/fortify v1.8.1
 	go.klarlabs.de/mcp v1.24.0
-	go.klarlabs.de/statekit v1.13.1
+	go.klarlabs.de/statekit v1.13.2
 	golang.org/x/oauth2 v0.36.0
 	gopkg.in/yaml.v3 v3.0.1
 )
