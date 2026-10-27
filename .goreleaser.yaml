@@ -102,7 +102,7 @@ sboms:
     artifacts: archive
     cmd: cp
     args:
-      - nox-sbom/sbom.cdx.json
+      - "{{ .Env.RUNNER_TEMP }}/nox-sbom/sbom.cdx.json"
       - "$document"
     documents:
       - "${artifact}.sbom.cdx.json"
