@@ -18,6 +18,26 @@ import (
 // registerResources exposes mailbox and outbox state as MCP resources —
 // all reads route through the application service.
 func registerResources(srv *mcp.Server, svc *application.Service, ob *application.Outbox) {
+	srv.Resource("email://outbound").
+		Name("Outbound mail setup").
+		Description("Whether outbound email tools are enabled and how to configure authenticated TLS delivery.").
+		MimeType("application/json").
+		Handler(func(_ context.Context, uri string, _ map[string]string) (*server.ResourceContent, error) {
+			payload := map[string]any{
+				"enabled": ob != nil,
+				"tools":   []string{"email.send", "email.reply", "email.forward", "email.send_status", "email.retry"},
+			}
+			if ob == nil {
+				payload["setup"] = "Add this to briefkasten.yaml, replacing the sender and SMTP credentials with values authorized by your provider:\n\noutbox:\n  dir: ./outbox\n  from: you@example.com\n  smtp:\n    addr: smtp.example.com:587\n    username: you@example.com\n    password: <SMTP password>\n\nSTARTTLS is the default; set implicit_tls: true for providers requiring implicit TLS (commonly port 465). OAuth2 can be used instead of a password. Restart briefkasten to enable outbound tools. See the Sending section in the README for details."
+			} else {
+				payload["status"] = "Outbound tools are enabled. Sending requires explicit human confirmation; delivery is asynchronous and can be tracked with email.send_status."
+				if from := ob.From(); from != "" {
+					payload["from"] = from
+				}
+			}
+			return jsonResource(uri, payload)
+		})
+
 	srv.Resource("email://inbox").
 		Name("Inbox").
 		Description("Unread message ids in the mailbox.").

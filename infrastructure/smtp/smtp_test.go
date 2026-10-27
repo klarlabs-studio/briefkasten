@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/mail"
 	"strings"
 	"sync"
 	"testing"
@@ -329,9 +330,9 @@ func TestSMTPEnvelopeCarriesBccButTheMessageDoesNot(t *testing.T) {
 	}
 	err = sender.Send(context.Background(), domain.OutboundMessage{
 		ID:      "m-bcc",
-		To:      []string{"visible@kanzlei.example"},
-		Cc:      []string{"copied@kanzlei.example"},
-		Bcc:     []string{"hidden@kanzlei.example", "quiet@kanzlei.example"},
+		To:      []string{"Visible Person <visible@kanzlei.example>"},
+		Cc:      []string{"Copied Person <copied@kanzlei.example>"},
+		Bcc:     []string{"Hidden Person <hidden@kanzlei.example>", "quiet@kanzlei.example"},
 		Subject: "Belege",
 		Body:    "Anbei.",
 	})
@@ -355,14 +356,23 @@ func TestSMTPEnvelopeCarriesBccButTheMessageDoesNot(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(backend.data, "Cc: copied@kanzlei.example") {
-		t.Errorf("Cc missing from the delivered message:\n%s", backend.data)
-	}
 	for _, hidden := range []string{"hidden@kanzlei.example", "quiet@kanzlei.example", "Bcc:"} {
 		if strings.Contains(backend.data, hidden) {
 			t.Errorf("delivered message exposes %q — every recipient would see the blind list:\n%s",
 				hidden, backend.data)
 		}
+	}
+	msg, err := mail.ReadMessage(strings.NewReader(backend.data))
+	if err != nil {
+		t.Fatalf("parse delivered message: %v", err)
+	}
+	to, err := mail.ParseAddress(msg.Header.Get("To"))
+	if err != nil || to.Name != "Visible Person" || to.Address != "visible@kanzlei.example" {
+		t.Errorf("To header = %q, parsed as %#v, err = %v", msg.Header.Get("To"), to, err)
+	}
+	cc, err := mail.ParseAddress(msg.Header.Get("Cc"))
+	if err != nil || cc.Name != "Copied Person" || cc.Address != "copied@kanzlei.example" {
+		t.Errorf("Cc header = %q, parsed as %#v, err = %v", msg.Header.Get("Cc"), cc, err)
 	}
 }
 
