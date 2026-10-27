@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"go.klarlabs.de/mcp/server"
+	"go.klarlabs.de/mcp/testutil"
 
 	"go.klarlabs.de/briefkasten/application"
 	"go.klarlabs.de/briefkasten/domain"
@@ -27,6 +28,21 @@ func TestArchiveReadMessageOverMCP(t *testing.T) {
 	all := callMap(t, client, "email.list", map[string]any{"scope": "all"})
 	if ids := all["ids"].([]string); len(ids) != 1 || ids[0] != "b.eml" {
 		t.Errorf("all after archiving read mail = %v, want [b.eml]", ids)
+	}
+}
+
+func TestConfiguredBulkLimitIsEnforcedBeforeConfirmation(t *testing.T) {
+	mb, _ := newDir(t)
+	svc := application.NewService(mb, nil)
+	svc.SetBulkLimit(1)
+	client := testutil.NewTestClient(t, New(svc))
+	resource, err := client.ReadResource(InboxUIResourceURI)
+	if err != nil || !strings.Contains(resource, "MAX_BULK = 1") {
+		t.Fatalf("configured inbox UI cap = %v, err %v", resource, err)
+	}
+	_, err = client.CallToolRaw("email.delete", map[string]any{"ids": []string{"a", "b"}, "confirm": true})
+	if err == nil || !strings.Contains(err.Error(), "1-id cap") {
+		t.Fatalf("oversized configured batch error = %v, want cap before confirmation", err)
 	}
 }
 

@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 
 	authdomain "github.com/klarlabs-studio/auth-go/domain"
 	mcp "go.klarlabs.de/mcp"
 	"gopkg.in/yaml.v3"
 
+	"go.klarlabs.de/briefkasten/domain"
 	"go.klarlabs.de/briefkasten/infrastructure/mcpserver"
 )
 
@@ -17,6 +19,8 @@ import (
 // 12-factor precedence: environment variables override the config file,
 // which overrides defaults.
 type Config struct {
+	// BulkLimit caps IDs accepted by one multi-message operation. Zero uses 100.
+	BulkLimit int `yaml:"bulk_limit"`
 	// Transport selects how the MCP server is exposed: "http" (default,
 	// listens on Addr) or "stdio" (JSON-RPC over stdin/stdout, for
 	// clients that spawn the binary as a child process).
@@ -69,6 +73,13 @@ type Config struct {
 	// choice; writing it to disk on the first config.set would quietly
 	// undo it and leak the secret into backups and version control.
 	envSecrets map[string]bool
+}
+
+func (c *Config) effectiveBulkLimit() int {
+	if c.BulkLimit <= 0 {
+		return domain.MaxBulkIDs
+	}
+	return c.BulkLimit
 }
 
 // AuthSettings guards the MCP HTTP endpoint with basic auth. Every
@@ -187,7 +198,7 @@ func (c *Config) BuildAccounts() (map[string]Mailbox, error) {
 		// Indexed rather than ranged by value: AccountSettings carries the
 		// full IMAP block, so copying one per iteration is pure waste.
 		a := c.Accounts[name]
-		sub := &Config{Backend: a.Backend, Maildir: a.Maildir, IMAP: a.IMAP}
+		sub := &Config{Backend: a.Backend, Maildir: a.Maildir, IMAP: a.IMAP, BulkLimit: c.BulkLimit}
 		mb, _, err := sub.BuildMailbox()
 		if err != nil {
 			return nil, fmt.Errorf("config: account %q: %w", name, err)
@@ -275,6 +286,11 @@ func (c *Config) Save() error {
 // ApplyEnv overlays BRIEFKASTEN_* environment variables onto the
 // configuration. Unset variables leave existing values untouched.
 func (c *Config) ApplyEnv() {
+	if v := os.Getenv("BRIEFKASTEN_BULK_LIMIT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.BulkLimit = n
+		}
+	}
 	overlay(&c.Transport, "BRIEFKASTEN_TRANSPORT")
 	overlay(&c.Addr, "BRIEFKASTEN_ADDR")
 	overlay(&c.Backend, "BRIEFKASTEN_BACKEND")
@@ -402,9 +418,12 @@ func (c *Config) ResolvedBackend() string {
 // BuildMailbox constructs the configured backend and a short description
 // for logging.
 func (c *Config) BuildMailbox() (Mailbox, string, error) {
+	if c.BulkLimit < 0 {
+		return nil, "", fmt.Errorf("config: bulk_limit must be positive or omitted, got %d", c.BulkLimit)
+	}
 	switch backend := c.ResolvedBackend(); backend {
 	case "maildir":
-		mb, err := NewDirMailbox(c.Maildir)
+		mb, err := NewDirMailboxWithBulkLimit(c.Maildir, c.effectiveBulkLimit())
 		if err != nil {
 			return nil, "", err
 		}
@@ -416,6 +435,7 @@ func (c *Config) BuildMailbox() (Mailbox, string, error) {
 			}
 		}
 		mb, err := NewIMAPMailbox(IMAPConfig{
+			MaxBulkIDs:    c.effectiveBulkLimit(),
 			Addr:          c.IMAP.Addr,
 			Username:      c.IMAP.Username,
 			Password:      c.IMAP.Password,

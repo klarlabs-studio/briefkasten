@@ -9,7 +9,7 @@ contract instead of binding to IMAP libraries:
 
 | Tool | Does |
 |---|---|
-| `email.list` | `{"scope?": "unread\|read\|all", "limit?"}` → `{"ids": ["..."], "total": N, "scope": "unread"}` — `scope` defaults to `unread` |
+| `email.list` | `{"scope?": "unread\|read\|all", "limit?", "offset?", "include_headers?"}` → IDs and totals; `include_headers=true` adds parsed From/To/Subject/Date/Message-ID for each message in the selected page |
 | `email.list_unread` | `{"limit?"}` → `{"ids": ["..."], "total": N}` — `email.list` with `scope=unread` |
 | `email.fetch` | `{"id"}` → `{"raw": "<base64 RFC 5322>"}`, or `{"ids": [...]}` → `{"fetched": [{"id", "raw"}], "failed": [...], "total": N}` — read or unread; never sets `\Seen`; a batch is refused whole if it measures over 25 MiB |
 | `email.mark_seen` | `{"id"}` → `{"ok": true}`, or `{"ids": [...]}` → `{"marked": [...], "failed": [...], "total": N}` — message won't be listed again; idempotent, so re-acknowledging read mail is not an error |
@@ -18,7 +18,7 @@ contract instead of binding to IMAP libraries:
 | `email.forward`* | `{"id", "to": [...], "body?", "html_body?", "confirm?"}` → `{"id", "state": "queued"}` — **human-confirmed**; the original is attached whole as `message/rfc822`, so its own attachments survive byte for byte; one over 10 MiB is refused with its measured size |
 | `email.send_status`* | `{"id"}` → `{"state": "queued\|sending\|sent\|failed", "attempts", "error?"}` |
 | `email.retry`* | `{"id"}` → `{"id", "state": "queued"}` — re-queue a failed send |
-| `email.search` | `{"query", "scope?", "folder?", "account?", "limit?"}` → `{"ids": [...], "total": N, "scope": "unread"}` — case-insensitive; IMAP searches server-side |
+| `email.search` | `{"query", "scope?", "folder?", "account?", "limit?", "offset?", "include_headers?"}` → IDs and totals; `include_headers=true` adds parsed headers for each message in the selected page — case-insensitive; IMAP searches server-side |
 | `email.archive` | `{"id" \| "ids", "confirm?"}` → `{"ok": true}` / `{"archived": [...], "failed": [...], "total": N}` — **human-confirmed** (elicitation or confirm flag); soft: filed to Archive, never destroyed; read or unread |
 | `email.delete` | `{"id" \| "ids", "confirm?"}` → `{"ok": true}` / `{"deleted": [...], "failed": [...], "total": N}` — **human-confirmed**; soft delete to Trash, never expunged; read or unread |
 | `email.folder_create` | `{"name", "account?", "confirm?"}` → `{"ok": true, "folder": "Work"}` — **human-confirmed**; idempotent; the name is resolved into the account's folder space (`Work` → `INBOX.Work` on an `INBOX.`-rooted server) |
@@ -33,7 +33,8 @@ always reports the full count.
 ### Bulk: many ids, one call
 
 `email.fetch`, `email.mark_seen`, `email.archive`, and `email.delete`
-take either `id` (one message) or `ids` (a batch of up to **100**) —
+take either `id` (one message) or `ids` (a batch up to the configured
+`bulk_limit`, default **100**) —
 exactly one of the two; both, or neither, is refused. On IMAP a batch
 costs what one message costs: the curation folder is resolved once, and
 one `UID FETCH`, one `UID COPY` and one `UID STORE` carry the whole set.
@@ -177,7 +178,7 @@ Beyond tools, the full MCP surface:
 | Prompts | `summarize_inbox(count?)` (embeds up to `count` unread messages, default 20, capped at 100 and clamped rather than refused, each truncated at 16 KiB), `draft_reply(id)` (embeds the original — read or unread — truncated at 16 KiB) |
 | Annotations | read tools are `readOnlyHint`, `mark_seen` is `idempotentHint`, `config.set`, the sending tools and the folder tools are `destructiveHint` |
 | Instructions | the consumption contract (mark seen only after successful processing) ships as server instructions |
-| **MCP Apps UI** | `ui://briefkasten/inbox` — an interactive inbox rendered by hosts supporting the MCP Apps extension; linked from `email.list_unread` and `email.send_status`. Switch folders (read from `email://folders`, which also names where archive and delete file) and between unread/read/all, search the folder on show, read a message, mark seen, archive, delete, reply and reply-all in a composer that opens under the message, forward it to recipients you type, and compose with cc/bcc. Select several messages and mark seen, archive or delete them as one batch — the host is elicited once for the whole set, and the 100-id cap is refused before you are asked. Create and delete folders, where a folder holding mail is refused with its message count. Watch the outbox (`email://outbox`) with failures listed first, and re-queue a failed send with `email.retry` — the one action that could previously be started here and then lost sight of, since delivery is asynchronous. Every gated send still goes through the host's own confirmation — the page never sends `confirm` on your behalf |
+| **MCP Apps UI** | `ui://briefkasten/inbox` — an interactive inbox rendered by hosts supporting the MCP Apps extension; linked from `email.list_unread` and `email.send_status`. Switch folders (read from `email://folders`, which also names where archive and delete file) and between unread/read/all, search the folder on show, read a message, mark seen, archive, delete, reply and reply-all in a composer that opens under the message, forward it to recipients you type, and compose with cc/bcc. Select several messages and mark seen, archive or delete them as one batch — the host is elicited once for the whole set, and the configured `bulk_limit` is refused before you are asked. Create and delete folders, where a folder holding mail is refused with its message count. Watch the outbox (`email://outbox`) with failures listed first, and re-queue a failed send with `email.retry` — the one action that could previously be started here and then lost sight of, since delivery is asynchronous. Every gated send still goes through the host's own confirmation — the page never sends `confirm` on your behalf |
 
 Built on [mcp-go](https://github.com/klarlabs-studio/mcp-go).
 
@@ -448,6 +449,7 @@ transport: http          # http, grpc, or stdio
 addr: ":8090"
 backend: imap            # or maildir; inferred from imap.addr when omitted
 maildir: ./maildir
+bulk_limit: 100          # IDs in one multi-message operation; default 100
 imap:
   addr: imap.example.org:993
   username: alice
@@ -464,7 +466,8 @@ profiles:                # named configurations, switchable at runtime
 
 Every key has an env override: `BRIEFKASTEN_TRANSPORT`, `BRIEFKASTEN_ADDR`, `BRIEFKASTEN_BACKEND`,
 `BRIEFKASTEN_MAILDIR`, `BRIEFKASTEN_IMAP_ADDR` / `_USER` / `_PASSWORD` /
-`_MAILBOX` / `_INSECURE`, `BRIEFKASTEN_RUNTIME_CONFIG`.
+`_MAILBOX` / `_INSECURE`, `BRIEFKASTEN_RUNTIME_CONFIG`,
+`BRIEFKASTEN_BULK_LIMIT`.
 
 **Secrets stay where you put them.** `config.set` rewrites the config file, but a
 password supplied through `BRIEFKASTEN_IMAP_PASSWORD`, `BRIEFKASTEN_SMTP_PASSWORD`,

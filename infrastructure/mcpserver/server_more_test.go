@@ -65,6 +65,33 @@ func TestSearchLimit(t *testing.T) {
 	}
 }
 
+func TestListWithHeadersAndOffset(t *testing.T) {
+	client, root := newClient(t)
+	drop(t, root, "a.eml", "From: Lenny <lenny@example.org>\r\nSubject: Podcast 1\r\n\r\nbody")
+	drop(t, root, "b.eml", "From: Ted <ted@example.org>\r\nSubject: Podcast 2\r\n\r\nbody")
+
+	out := callMap(t, client, "email.list", map[string]any{"scope": "all", "offset": 1, "limit": 1, "include_headers": true})
+	if out["total"] != 2 || out["offset"] != 1 {
+		t.Fatalf("page metadata = %v", out)
+	}
+	messages, ok := out["messages"].([]map[string]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("messages = %#v, want one enriched result", out["messages"])
+	}
+	if messages[0]["id"] != "b.eml" || messages[0]["from"] != "Ted <ted@example.org>" || messages[0]["subject"] != "Podcast 2" {
+		t.Errorf("message headers = %#v", messages[0])
+	}
+}
+
+func TestSearchWithHeadersAcceptsCallerSizedPage(t *testing.T) {
+	client, root := newClient(t)
+	drop(t, root, "a.eml", "From: a@b.c\r\nSubject: Newsletter\r\n\r\nnewsletter")
+	resp, err := client.CallToolRaw("email.search", map[string]any{"query": "newsletter", "include_headers": true, "limit": 101})
+	if err != nil || resp == nil || resp.Error != nil {
+		t.Fatalf("caller sized header page rejected: resp=%v err=%v", resp, err)
+	}
+}
+
 func TestRetryToolRequeuesFailedSend(t *testing.T) {
 	sender := &failingSender{}
 	ob := newOutbox(t, sender)

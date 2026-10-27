@@ -24,6 +24,56 @@ type sizedBox struct {
 	sizeCalls int
 }
 
+type headerBox struct {
+	*memBox
+	got string
+}
+
+func (h *headerBox) List(_ context.Context, _ domain.Scope) ([]string, error) {
+	return []string{"a", "b"}, nil
+}
+
+func (h *headerBox) FetchHeaders(_ context.Context, id string) (domain.MessageHeaders, error) {
+	h.got = id
+	return domain.MessageHeaders{From: "sender@example.org", Subject: "hello"}, nil
+}
+
+func (h *headerBox) FetchHeadersMany(_ context.Context, ids []string) (map[string]domain.MessageHeaders, map[string]error) {
+	result := make(map[string]domain.MessageHeaders, len(ids))
+	for _, id := range ids {
+		h.got = id
+		result[id] = domain.MessageHeaders{From: "sender@example.org", Subject: "hello"}
+	}
+	return result, nil
+}
+
+func TestReadHeadersAndSwitchableForwarding(t *testing.T) {
+	backend := &headerBox{memBox: newMemBox(map[string]string{"a.eml": "body"})}
+	svc := application.NewService(application.NewSwitchable(backend), nil)
+	got, err := svc.ReadHeaders(t.Context(), "", "", "a.eml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.From != "sender@example.org" || got.Subject != "hello" || backend.got != "a.eml" {
+		t.Fatalf("headers = %+v, backend id = %q", got, backend.got)
+	}
+}
+
+func TestListMessagesReturnsPaginatedSummaries(t *testing.T) {
+	backend := &headerBox{memBox: newMemBox(map[string]string{"a": "body", "b": "body"})}
+	svc := application.NewService(backend, nil)
+	page, err := svc.ListMessages(t.Context(), "", "", domain.ScopeAll, 1, 1, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 2 || page.Offset != 1 || len(page.IDs) != 1 || len(page.Messages) != 1 {
+		t.Fatalf("page = %+v", page)
+	}
+	if page.IDs[0] != page.Messages[0].ID || page.Messages[0].Subject != "hello" || backend.got != page.IDs[0] {
+		t.Fatalf("summary page = %+v, backend id = %q", page, backend.got)
+	}
+}
+
 func newSizedBox(msgs map[string]string) *sizedBox {
 	return &sizedBox{memBox: newMemBox(msgs)}
 }

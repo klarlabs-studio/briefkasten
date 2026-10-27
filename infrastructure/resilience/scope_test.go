@@ -11,6 +11,28 @@ import (
 // scopedStub is a Mailbox that knows read from unread mail.
 type scopedStub struct{ *flakyMailbox }
 
+type headerStub struct {
+	*flakyMailbox
+	seenID string
+}
+
+func (s *headerStub) FetchHeaders(_ context.Context, id string) (domain.MessageHeaders, error) {
+	s.seenID = id
+	return domain.MessageHeaders{Subject: "subject"}, nil
+}
+
+func TestResilientHeaderFetcher(t *testing.T) {
+	inner := &headerStub{flakyMailbox: &flakyMailbox{}}
+	mb := Wrap(inner, Config{MaxAttempts: 1})
+	got, err := mb.FetchHeaders(t.Context(), "m1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Subject != "subject" || inner.seenID != "m1" {
+		t.Fatalf("headers = %+v, backend id = %q", got, inner.seenID)
+	}
+}
+
 func (s scopedStub) List(_ context.Context, scope domain.Scope) ([]string, error) {
 	switch scope {
 	case domain.ScopeUnread:
