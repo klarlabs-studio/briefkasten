@@ -56,10 +56,14 @@ jobs:
           fail-on-findings: 'false'
           annotate: 'false'
           offline: 'true'
+      # The workflow and release config come from main, while source comes from the selected tag.
+      # This keeps retries of older tags aligned with the current SBOM and release tooling.
+      - name: Load current GoReleaser config
+        run: git show origin/main:.goreleaser.yaml > "$RUNNER_TEMP/.goreleaser.yaml"
       - name: goreleaser
         uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
-          args: release --clean
+          args: release --clean --config ${{ runner.temp }}/.goreleaser.yaml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
