@@ -230,6 +230,41 @@ func (s *Service) Delete(ctx context.Context, account, folder, id string) error 
 	return cu.Delete(ctx, id)
 }
 
+// Move files a message into an existing user-selected folder. The source
+// folder is resolved before the move; destination is resolved by the
+// backend against the account's folder space. The caller must have
+// obtained human confirmation.
+func (s *Service) Move(ctx context.Context, account, folder, id, destination string) error {
+	if err := domain.CheckFolderName(destination); err != nil {
+		return err
+	}
+	box, err := s.Resolve(ctx, account, folder)
+	if err != nil {
+		return err
+	}
+	mover, ok := box.(domain.Mover)
+	if !ok {
+		return errors.New("briefkasten: backend has no move support")
+	}
+	return mover.Move(ctx, id, destination)
+}
+
+// MoveMany files explicit messages into an existing user-selected folder,
+// reporting the outcome per id. The caller must have obtained human
+// confirmation for the whole batch.
+func (s *Service) MoveMany(
+	ctx context.Context, account, folder string, ids []string, destination string,
+) (domain.BulkResult, error) {
+	if err := domain.CheckFolderName(destination); err != nil {
+		return domain.BulkResult{}, err
+	}
+	box, err := s.Resolve(ctx, account, folder)
+	if err != nil {
+		return domain.BulkResult{}, err
+	}
+	return moveMany(ctx, box, ids, destination)
+}
+
 // ArchiveMany files a batch of messages away, reporting the outcome per
 // id. The caller must have obtained human confirmation for the batch as
 // a whole — one gesture, stated blast radius.
@@ -420,6 +455,27 @@ func curateMany(
 		return bulkEach(ctx, ids, cu.Archive)
 	}
 	return bulkEach(ctx, ids, cu.Delete)
+}
+
+// moveMany dispatches to native batch support or loops through the
+// single-message mover. The batch cap is consistent across backends.
+func moveMany(ctx context.Context, mb domain.Mailbox, ids []string, destination string) (domain.BulkResult, error) {
+	if err := domain.CheckBulkIDs(ids); err != nil {
+		return domain.BulkResult{}, err
+	}
+	if err := domain.CheckFolderName(destination); err != nil {
+		return domain.BulkResult{}, err
+	}
+	if bm, ok := mb.(domain.BulkMover); ok {
+		return bm.MoveMany(ctx, ids, destination)
+	}
+	mover, ok := mb.(domain.Mover)
+	if !ok {
+		return domain.BulkResult{}, errors.New("briefkasten: backend has no move support")
+	}
+	return bulkEach(ctx, ids, func(ctx context.Context, id string) error {
+		return mover.Move(ctx, id, destination)
+	})
 }
 
 // curationAction names which soft move a bulk call performs, so the two

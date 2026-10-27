@@ -339,6 +339,25 @@ func (r *Mailbox) Delete(ctx context.Context, id string) error {
 	return err
 }
 
+// Move forwards to the wrapped backend's Mover through the pipeline.
+func (r *Mailbox) Move(ctx context.Context, id, destination string) error {
+	mover, ok := r.mb.(domain.Mover)
+	if !ok {
+		return errors.New("briefkasten: backend has no move support")
+	}
+	_, err := r.execute(ctx, func(ctx context.Context) (any, error) { return nil, mover.Move(ctx, id, destination) })
+	return err
+}
+
+// MoveMany forwards a batch move or uses the individual-move fallback.
+func (r *Mailbox) MoveMany(ctx context.Context, ids []string, destination string) (domain.BulkResult, error) {
+	v, err := r.execute(ctx, func(ctx context.Context) (any, error) { return moveManyFallback(ctx, r.mb, ids, destination) })
+	if err != nil {
+		return domain.BulkResult{}, err
+	}
+	return v.(domain.BulkResult), nil
+}
+
 // CurationPlan forwards to the wrapped backend's inspector through the
 // pipeline. Resolution talks to the server, so it deserves the same
 // timeout and breaker as any other call.
@@ -363,8 +382,10 @@ var (
 	_ domain.FolderMailbox     = (*Mailbox)(nil)
 	_ domain.FolderManager     = (*Mailbox)(nil)
 	_ domain.Curator           = (*Mailbox)(nil)
+	_ domain.Mover             = (*Mailbox)(nil)
 	_ domain.BulkMailbox       = (*Mailbox)(nil)
 	_ domain.BulkCurator       = (*Mailbox)(nil)
+	_ domain.BulkMover         = (*Mailbox)(nil)
 	_ domain.BulkFetcher       = (*Mailbox)(nil)
 	_ domain.MessageSizer      = (*Mailbox)(nil)
 )
@@ -469,6 +490,20 @@ func curateManyFallback(ctx context.Context, mb domain.Mailbox, ids []string, tr
 		return bulkEachFallback(ctx, ids, cu.Delete)
 	}
 	return bulkEachFallback(ctx, ids, cu.Archive)
+}
+
+func moveManyFallback(ctx context.Context, mb domain.Mailbox, ids []string, destination string) (domain.BulkResult, error) {
+	if err := domain.CheckBulkIDs(ids); err != nil {
+		return domain.BulkResult{}, err
+	}
+	if bm, ok := mb.(domain.BulkMover); ok {
+		return bm.MoveMany(ctx, ids, destination)
+	}
+	mover, ok := mb.(domain.Mover)
+	if !ok {
+		return domain.BulkResult{}, errors.New("briefkasten: backend has no move support")
+	}
+	return bulkEachFallback(ctx, ids, func(ctx context.Context, id string) error { return mover.Move(ctx, id, destination) })
 }
 
 // bulkEachFallback loops a single-message operation over a batch,

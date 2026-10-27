@@ -31,6 +31,7 @@ import (
 // made to wait for work nobody is waiting for.
 type Mailbox struct {
 	root string
+	base string
 }
 
 // New prepares the directory layout (root/new, root/cur).
@@ -40,7 +41,7 @@ func New(root string) (*Mailbox, error) {
 			return nil, fmt.Errorf("briefkasten: prepare %s: %w", sub, err)
 		}
 	}
-	return &Mailbox{root: root}, nil
+	return &Mailbox{root: root, base: root}, nil
 }
 
 // ListUnread returns message ids (filenames) in new/, in stable order.
@@ -355,13 +356,92 @@ func (d *Mailbox) InFolder(ctx context.Context, name string) (domain.Mailbox, er
 	// Curated names resolve through the table, so the path component is
 	// a constant from this file rather than anything the caller supplied.
 	if dir, ok := curatedDir(name); ok {
-		return New(filepath.Join(d.root, dir))
+		box, err := New(filepath.Join(d.root, dir))
+		if err == nil {
+			box.base = d.base
+		}
+		return box, err
 	}
 	if name == "" || name != filepath.Base(name) || strings.HasPrefix(name, ".") {
 		return nil, fmt.Errorf("briefkasten: invalid folder %q", name)
 	}
-	return New(filepath.Join(d.root, name))
+	box, err := New(filepath.Join(d.root, name))
+	if err == nil {
+		box.base = d.base
+	}
+	return box, err
 }
+
+// Move files a message into an existing sibling folder, preserving its
+// read state and refusing to overwrite an existing message.
+func (d *Mailbox) Move(ctx context.Context, id, destination string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := domain.CheckFolderName(destination); err != nil {
+		return err
+	}
+	if destination == "INBOX" {
+		destination = ""
+	}
+	if destination != "" {
+		if destination != filepath.Base(destination) || strings.HasPrefix(destination, ".") {
+			return fmt.Errorf("%w: %q must be a single folder name", domain.ErrBadFolder, destination)
+		}
+		if _, protected := curatedDir(destination); protected {
+			return fmt.Errorf("%w: %q is reserved for curation", domain.ErrFolderProtected, destination)
+		}
+	}
+	from, err := d.locate(id)
+	if err != nil {
+		return err
+	}
+	if filepath.Dir(from) == "" {
+		return fmt.Errorf("briefkasten: invalid message path")
+	}
+	targetRoot := d.base
+	if destination != "" {
+		targetRoot = filepath.Join(d.base, destination)
+	}
+	if _, err := os.Stat(filepath.Join(targetRoot, "new")); err != nil {
+		return fmt.Errorf("briefkasten: destination folder %q does not exist", destination)
+	}
+	sub := filepath.Base(filepath.Dir(from))
+	to := filepath.Join(targetRoot, sub, id)
+	if _, err := os.Lstat(to); err == nil {
+		return fmt.Errorf("briefkasten: destination already contains message %q", id)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Rename(from, to); err != nil {
+		return fmt.Errorf("briefkasten: move %q to %q: %w", id, destination, err)
+	}
+	return nil
+}
+
+// MoveMany files each explicit id into an existing folder and reports per-id outcomes.
+func (d *Mailbox) MoveMany(ctx context.Context, ids []string, destination string) (domain.BulkResult, error) {
+	if err := domain.CheckBulkIDs(ids); err != nil {
+		return domain.BulkResult{}, err
+	}
+	res := domain.NewBulkResult(len(ids))
+	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			return res, err
+		}
+		if err := d.Move(ctx, id, destination); err != nil {
+			res.Fail(id, err)
+		} else {
+			res.Succeed(id)
+		}
+	}
+	return res, nil
+}
+
+var (
+	_ domain.Mover     = (*Mailbox)(nil)
+	_ domain.BulkMover = (*Mailbox)(nil)
+)
 
 var _ domain.FolderMailbox = (*Mailbox)(nil)
 
