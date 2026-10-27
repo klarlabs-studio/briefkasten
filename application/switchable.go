@@ -146,6 +146,15 @@ func (s *Switchable) Delete(ctx context.Context, id string) error {
 	return cu.Delete(ctx, id)
 }
 
+// Move forwards to the backend's Mover.
+func (s *Switchable) Move(ctx context.Context, id, destination string) error {
+	mover, ok := s.current().(domain.Mover)
+	if !ok {
+		return errors.New("briefkasten: backend has no move support")
+	}
+	return mover.Move(ctx, id, destination)
+}
+
 // ArchiveMany forwards to the backend's BulkCurator, or loops over its
 // Curator. Without the forward the capability would vanish behind this
 // decorator and every batch would silently fall back to one call per id.
@@ -157,6 +166,11 @@ func (s *Switchable) ArchiveMany(ctx context.Context, ids []string) (domain.Bulk
 // Curator.
 func (s *Switchable) DeleteMany(ctx context.Context, ids []string) (domain.BulkResult, error) {
 	return curateMany(ctx, s.current(), ids, actionDelete)
+}
+
+// MoveMany forwards a batch move or falls back to individual moves.
+func (s *Switchable) MoveMany(ctx context.Context, ids []string, destination string) (domain.BulkResult, error) {
+	return moveMany(ctx, s.current(), ids, destination)
 }
 
 // CurationPlan forwards to the backend's inspector. The destinations
@@ -184,9 +198,11 @@ var (
 	_ domain.ScopedSearcher    = (*Switchable)(nil)
 	_ domain.FolderMailbox     = (*Switchable)(nil)
 	_ domain.Curator           = (*Switchable)(nil)
+	_ domain.Mover             = (*Switchable)(nil)
 	_ domain.CurationInspector = (*Switchable)(nil)
 	_ domain.BulkMailbox       = (*Switchable)(nil)
 	_ domain.BulkCurator       = (*Switchable)(nil)
+	_ domain.BulkMover         = (*Switchable)(nil)
 	_ domain.BulkFetcher       = (*Switchable)(nil)
 	_ domain.MessageSizer      = (*Switchable)(nil)
 )
