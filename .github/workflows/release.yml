@@ -38,18 +38,21 @@ jobs:
       - name: Run tests
         run: go test -race ./...
       # cosign and nox must exist before goreleaser runs: the `signs:` and
-      # `sboms:` blocks in .goreleaser.yaml shell out to them. Pin both tools
-      # to exact versions.
+      # `sboms:` blocks in .goreleaser.yaml shell out to them.
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: v3.1.2
-      - name: Install nox
-        run: |
-          GOBIN="$(go env GOPATH)/bin" go install github.com/nox-hq/nox/cli@v1.54.0
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: Generate dependency SBOM
-        run: nox scan . --only deps --format cdx --output nox-sbom --offline --tracked-only
+        uses: nox-hq/nox@0b56bd883d8db126a4711ae9a5c1eb5c8ac45c4b # v1.54.0
+        with:
+          path: .
+          format: cdx
+          output: nox-sbom
+          version: v1.54.0
+          fail-on-findings: 'false'
+          annotate: 'false'
+          offline: 'true'
       - name: goreleaser
         uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
