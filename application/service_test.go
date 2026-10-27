@@ -16,13 +16,14 @@ type memBox struct {
 	seen     map[string]bool
 	archived map[string]bool
 	trashed  map[string]bool
+	moved    map[string]string
 	folders  map[string]*memBox
 }
 
 func newMemBox(msgs map[string]string) *memBox {
 	return &memBox{
 		msgs: msgs, seen: map[string]bool{},
-		archived: map[string]bool{}, trashed: map[string]bool{},
+		archived: map[string]bool{}, trashed: map[string]bool{}, moved: map[string]string{},
 		folders: map[string]*memBox{},
 	}
 }
@@ -68,6 +69,10 @@ func (m *memBox) InFolder(_ context.Context, name string) (domain.Mailbox, error
 
 func (m *memBox) Archive(_ context.Context, id string) error { m.archived[id] = true; return nil }
 func (m *memBox) Delete(_ context.Context, id string) error  { m.trashed[id] = true; return nil }
+func (m *memBox) Move(_ context.Context, id, destination string) error {
+	m.moved[id] = destination
+	return nil
+}
 
 // bareBox has no optional capabilities at all.
 type bareBox struct{ inner *memBox }
@@ -166,6 +171,31 @@ func TestServiceAccountsAndCuration(t *testing.T) {
 	}
 	if err := bare.Delete(t.Context(), "", "", "c.eml"); err == nil {
 		t.Error("delete on curatorless backend accepted")
+	}
+}
+
+func TestServiceMove(t *testing.T) {
+	inbox := newMemBox(map[string]string{"a.eml": "x"})
+	work := newMemBox(map[string]string{"b.eml": "y"})
+	inbox.folders["Work"] = work
+	business := newMemBox(map[string]string{"c.eml": "z"})
+	svc := application.NewService(inbox, map[string]domain.Mailbox{"business": business})
+
+	if err := svc.Move(t.Context(), "", "", "a.eml", "Work"); err != nil || inbox.moved["a.eml"] != "Work" {
+		t.Errorf("Move inbox = %v, moved %v", err, inbox.moved)
+	}
+	if err := svc.Move(t.Context(), "", "Work", "b.eml", "INBOX"); err != nil || work.moved["b.eml"] != "INBOX" {
+		t.Errorf("Move from folder = %v, moved %v", err, work.moved)
+	}
+	if err := svc.Move(t.Context(), "business", "", "c.eml", "Archive"); err != nil || business.moved["c.eml"] != "Archive" {
+		t.Errorf("Move account = %v, moved %v", err, business.moved)
+	}
+	if err := svc.Move(t.Context(), "", "", "a.eml", ""); !errors.Is(err, domain.ErrBadFolder) {
+		t.Errorf("Move empty destination = %v, want ErrBadFolder", err)
+	}
+	bare := application.NewService(bareBox{newMemBox(nil)}, nil)
+	if err := bare.Move(t.Context(), "", "", "a.eml", "Work"); err == nil {
+		t.Error("Move on backend without Mover accepted")
 	}
 }
 

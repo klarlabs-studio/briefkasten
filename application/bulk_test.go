@@ -86,6 +86,30 @@ func TestBulkCurationOverFallbackReportsPerID(t *testing.T) {
 	}
 }
 
+func TestBulkMoveOverFallbackReportsPerID(t *testing.T) {
+	mb, root := newBulkDir(t, "a.eml", "b.eml")
+	if err := mb.CreateFolder(t.Context(), "Work"); err != nil {
+		t.Fatal(err)
+	}
+	svc := application.NewService(mb, nil)
+	ids := []string{"a.eml", "ghost.eml", "b.eml"}
+	res, err := svc.MoveMany(t.Context(), "", "", ids, "Work")
+	if err != nil {
+		t.Fatalf("MoveMany: %v", err)
+	}
+	if !slices.Equal(res.Succeeded, []string{"a.eml", "b.eml"}) || !slices.Equal(failedIDs(res), []string{"ghost.eml"}) {
+		t.Fatalf("MoveMany = %v succeeded, %v failed", res.Succeeded, failedIDs(res))
+	}
+	for _, name := range []string{"a.eml", "b.eml"} {
+		if _, err := os.Stat(filepath.Join(root, "Work", "new", name)); err != nil {
+			t.Errorf("%s was not moved to Work: %v", name, err)
+		}
+		if _, err := os.Stat(filepath.Join(root, "new", name)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s remains in source folder: %v", name, err)
+		}
+	}
+}
+
 // Bulk mark-seen inherits MarkSeen's idempotence: acknowledging read
 // mail again succeeds and changes nothing.
 func TestBulkMarkSeenIsIdempotent(t *testing.T) {
@@ -143,6 +167,9 @@ func TestBulkSizeIsChecked(t *testing.T) {
 				{"DeleteMany", func(ids []string) (domain.BulkResult, error) {
 					return svc.DeleteMany(context.Background(), "", "", ids)
 				}},
+				{"MoveMany", func(ids []string) (domain.BulkResult, error) {
+					return svc.MoveMany(context.Background(), "", "", ids, "Work")
+				}},
 			} {
 				_, err := call.run(tc.ids)
 				if !errors.Is(err, domain.ErrBulkSize) {
@@ -165,8 +192,9 @@ func TestBulkSizeIsChecked(t *testing.T) {
 // capability or quietly fell back to one call per id.
 type bulkSpy struct {
 	*memBox
-	batches []int
-	singles int
+	batches      []int
+	singles      int
+	destinations []string
 }
 
 func (s *bulkSpy) record(ids []string) domain.BulkResult {
@@ -190,9 +218,19 @@ func (s *bulkSpy) DeleteMany(_ context.Context, ids []string) (domain.BulkResult
 	return s.record(ids), nil
 }
 
+func (s *bulkSpy) MoveMany(_ context.Context, ids []string, destination string) (domain.BulkResult, error) {
+	s.destinations = append(s.destinations, destination)
+	return s.record(ids), nil
+}
+
 func (s *bulkSpy) Archive(ctx context.Context, id string) error {
 	s.singles++
 	return s.memBox.Archive(ctx, id)
+}
+
+func (s *bulkSpy) Move(ctx context.Context, id, destination string) error {
+	s.singles++
+	return s.memBox.Move(ctx, id, destination)
 }
 
 // A capability that is not forwarded through the decorators vanishes
@@ -210,14 +248,18 @@ func TestSwitchableForwardsBulkCapability(t *testing.T) {
 		{"MarkSeenMany", func() (domain.BulkResult, error) { return sw.MarkSeenMany(context.Background(), ids) }},
 		{"ArchiveMany", func() (domain.BulkResult, error) { return sw.ArchiveMany(context.Background(), ids) }},
 		{"DeleteMany", func() (domain.BulkResult, error) { return sw.DeleteMany(context.Background(), ids) }},
+		{"MoveMany", func() (domain.BulkResult, error) { return sw.MoveMany(context.Background(), ids, "Work") }},
 	} {
 		res, err := call.run()
 		if err != nil || len(res.Succeeded) != len(ids) {
 			t.Fatalf("%s = %v, err %v", call.name, res, err)
 		}
 	}
-	if !slices.Equal(spy.batches, []int{3, 3, 3}) {
+	if !slices.Equal(spy.batches, []int{3, 3, 3, 3}) {
 		t.Errorf("backend saw batches %v, want one call of 3 per operation", spy.batches)
+	}
+	if !slices.Equal(spy.destinations, []string{"Work"}) {
+		t.Errorf("move destination = %v, want [Work]", spy.destinations)
 	}
 	if spy.singles != 0 {
 		t.Errorf("backend saw %d single-message curations, want none", spy.singles)

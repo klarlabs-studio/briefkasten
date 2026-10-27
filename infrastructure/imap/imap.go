@@ -1219,6 +1219,75 @@ func (m *Mailbox) fileTo(ctx context.Context, t curationTarget, id string) error
 	})
 }
 
+// Move files a message into an existing user folder. Like archive and
+// trash, IMAP uses COPY plus Seen and never expunges the source.
+func (m *Mailbox) Move(ctx context.Context, id, destination string) error {
+	if err := checkFolderName(destination); err != nil {
+		return err
+	}
+	uid, err := parseUID(id)
+	if err != nil {
+		return err
+	}
+	return m.withConn(ctx, func(c *imapclient.Client) error {
+		boxes, err := listAll(ctx, c)
+		if err != nil {
+			return err
+		}
+		full := namespaceFolder(m.personalPrefix(ctx, c), destination)
+		if _, held := findFolder(boxes, full); !held {
+			return fmt.Errorf("%w: destination folder %q does not exist", domain.ErrBadFolder, destination)
+		}
+		found, err := awaitValue(ctx, c, "locate "+id, c.Fetch(imap.UIDSetNum(uid), &imap.FetchOptions{UID: true}).Collect, cmdTimeout)
+		if err != nil {
+			return fmt.Errorf("imap: locate %s: %w", id, err)
+		}
+		if len(found) == 0 {
+			return fmt.Errorf("%w: %s", domain.ErrBadID, id)
+		}
+		if _, err := awaitValue(ctx, c, "copy "+id, c.Copy(imap.UIDSetNum(uid), full).Wait, cmdTimeout); err != nil {
+			return fmt.Errorf("imap: copy %s to %s: %w", id, full, err)
+		}
+		return await(ctx, c, "mark seen "+id, c.Store(imap.UIDSetNum(uid), &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagSeen}}, nil).Close, cmdTimeout)
+	})
+}
+
+// MoveMany files each explicit id into an existing folder and reports per-id outcomes.
+func (m *Mailbox) MoveMany(ctx context.Context, ids []string, destination string) (domain.BulkResult, error) {
+	if err := domain.CheckBulkIDs(ids); err != nil {
+		return domain.BulkResult{}, err
+	}
+	res, known := splitParsable(ids)
+	if len(known) == 0 {
+		return res, nil
+	}
+	err := m.withConn(ctx, func(c *imapclient.Client) error {
+		if err := checkFolderName(destination); err != nil {
+			return err
+		}
+		boxes, err := listAll(ctx, c)
+		if err != nil {
+			return err
+		}
+		full := namespaceFolder(m.personalPrefix(ctx, c), destination)
+		if _, held := findFolder(boxes, full); !held {
+			return fmt.Errorf("%w: destination folder %q does not exist", domain.ErrBadFolder, destination)
+		}
+		present, err := locateMany(ctx, c, &res, known)
+		if err != nil || len(present) == 0 {
+			return err
+		}
+		if _, err := awaitValue(ctx, c, fmt.Sprintf("copy %d ids to %s", len(present), full), c.Copy(uidSetOf(present), full).Wait, cmdTimeout); err != nil {
+			return err
+		}
+		return storeSeen(ctx, c, &res, present)
+	})
+	if err != nil {
+		return domain.BulkResult{}, err
+	}
+	return res, nil
+}
+
 // fileManyTo is fileTo for a whole batch, and costs what one message
 // costs: the destination is resolved once, the set's existence is
 // checked in one FETCH, and the set is carried by one COPY and one
@@ -1284,7 +1353,11 @@ func (m *Mailbox) DeleteMany(ctx context.Context, ids []string) (domain.BulkResu
 	return m.fileManyTo(ctx, m.trashTarget(), ids)
 }
 
-var _ domain.BulkCurator = (*Mailbox)(nil)
+var (
+	_ domain.BulkCurator = (*Mailbox)(nil)
+	_ domain.Mover       = (*Mailbox)(nil)
+	_ domain.BulkMover   = (*Mailbox)(nil)
+)
 
 // Archive files the message into the server's archive folder; the
 // original is marked seen, never expunged. The destination is whatever
