@@ -198,7 +198,7 @@ These are the things worth your time and ours.
   TLS while reporting otherwise, is in scope.
 - **Remotely triggerable resource exhaustion** — a single message or
   tool call that exhausts memory or wedges the server. The 25 MiB fetch
-  budget and the 100-id batch cap exist for exactly this; holes in them
+  budget and configured bulk-ID batch cap exist for exactly this; holes in them
   count.
 
 ### Not a vulnerability

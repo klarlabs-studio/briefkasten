@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"go.klarlabs.de/briefkasten/domain"
+	"go.klarlabs.de/briefkasten/infrastructure/mailheaders"
 )
 
 // Mailbox is the local-first backend: a maildir-style directory where
@@ -30,18 +31,38 @@ import (
 // is the whole of it: a caller whose deadline has already passed is not
 // made to wait for work nobody is waiting for.
 type Mailbox struct {
-	root string
-	base string
+	root       string
+	base       string
+	maxBulkIDs int
 }
 
 // New prepares the directory layout (root/new, root/cur).
 func New(root string) (*Mailbox, error) {
+	return NewWithBulkLimit(root, domain.MaxBulkIDs)
+}
+
+// NewWithBulkLimit prepares a Maildir using the requested bulk limit.
+func NewWithBulkLimit(root string, maxBulkIDs int) (*Mailbox, error) {
+	if maxBulkIDs <= 0 {
+		maxBulkIDs = domain.MaxBulkIDs
+	}
 	for _, sub := range []string{"new", "cur"} {
 		if err := os.MkdirAll(filepath.Join(root, sub), 0o700); err != nil {
 			return nil, fmt.Errorf("briefkasten: prepare %s: %w", sub, err)
 		}
 	}
-	return &Mailbox{root: root, base: root}, nil
+	return &Mailbox{root: root, base: root, maxBulkIDs: maxBulkIDs}, nil
+}
+
+// BulkLimit returns the maximum IDs accepted by bulk operations.
+func (m *Mailbox) BulkLimit() int { return m.maxBulkIDs }
+
+// SetBulkLimit changes the batch ceiling. Configure before sharing the mailbox.
+func (m *Mailbox) SetBulkLimit(limit int) {
+	if limit <= 0 {
+		limit = domain.MaxBulkIDs
+	}
+	m.maxBulkIDs = limit
 }
 
 // ListUnread returns message ids (filenames) in new/, in stable order.
@@ -91,7 +112,11 @@ func (m *Mailbox) List(ctx context.Context, scope domain.Scope) ([]string, error
 	return ids, nil
 }
 
-var _ domain.ScopedMailbox = (*Mailbox)(nil)
+var (
+	_ domain.ScopedMailbox      = (*Mailbox)(nil)
+	_ domain.HeaderFetcher      = (*Mailbox)(nil)
+	_ domain.BatchHeaderFetcher = (*Mailbox)(nil)
+)
 
 // Fetch returns the raw message bytes for an id, unread (new/) or
 // already read (cur/). Reading never moves the message, so fetching a
@@ -122,6 +147,34 @@ func (m *Mailbox) Fetch(ctx context.Context, id string) ([]byte, error) {
 	// here, which resilience must never retry nor hold against the
 	// backend's health.
 	return nil, fmt.Errorf("%w: %q", domain.ErrBadID, id)
+}
+
+// FetchHeaders reads the caller-visible headers without changing read state.
+func (m *Mailbox) FetchHeaders(ctx context.Context, id string) (domain.MessageHeaders, error) {
+	raw, err := m.Fetch(ctx, id)
+	if err != nil {
+		return domain.MessageHeaders{}, err
+	}
+	return mailheaders.Parse(raw), nil
+}
+
+// FetchHeadersMany reads each local message once, parsing only its headers.
+func (m *Mailbox) FetchHeadersMany(ctx context.Context, ids []string) (map[string]domain.MessageHeaders, map[string]error) {
+	result := make(map[string]domain.MessageHeaders, len(ids))
+	failures := make(map[string]error)
+	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			failures[id] = err
+			continue
+		}
+		h, err := m.FetchHeaders(ctx, id)
+		if err != nil {
+			failures[id] = err
+			continue
+		}
+		result[id] = h
+	}
+	return result, failures
 }
 
 // Sizes reports each id's size on disk without opening a single message.
@@ -356,7 +409,7 @@ func (d *Mailbox) InFolder(ctx context.Context, name string) (domain.Mailbox, er
 	// Curated names resolve through the table, so the path component is
 	// a constant from this file rather than anything the caller supplied.
 	if dir, ok := curatedDir(name); ok {
-		box, err := New(filepath.Join(d.root, dir))
+		box, err := NewWithBulkLimit(filepath.Join(d.root, dir), d.BulkLimit())
 		if err == nil {
 			box.base = d.base
 		}
@@ -365,7 +418,7 @@ func (d *Mailbox) InFolder(ctx context.Context, name string) (domain.Mailbox, er
 	if name == "" || name != filepath.Base(name) || strings.HasPrefix(name, ".") {
 		return nil, fmt.Errorf("briefkasten: invalid folder %q", name)
 	}
-	box, err := New(filepath.Join(d.root, name))
+	box, err := NewWithBulkLimit(filepath.Join(d.root, name), d.BulkLimit())
 	if err == nil {
 		box.base = d.base
 	}
@@ -421,7 +474,7 @@ func (d *Mailbox) Move(ctx context.Context, id, destination string) error {
 
 // MoveMany files each explicit id into an existing folder and reports per-id outcomes.
 func (d *Mailbox) MoveMany(ctx context.Context, ids []string, destination string) (domain.BulkResult, error) {
-	if err := domain.CheckBulkIDs(ids); err != nil {
+	if err := domain.CheckBulkIDsLimit(ids, d.BulkLimit()); err != nil {
 		return domain.BulkResult{}, err
 	}
 	res := domain.NewBulkResult(len(ids))

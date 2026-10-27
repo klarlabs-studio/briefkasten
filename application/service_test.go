@@ -20,6 +20,39 @@ type memBox struct {
 	folders  map[string]*memBox
 }
 
+func (m *memBox) FetchHeaders(_ context.Context, id string) (domain.MessageHeaders, error) {
+	if _, ok := m.msgs[id]; !ok {
+		return domain.MessageHeaders{}, domain.ErrBadID
+	}
+	return domain.MessageHeaders{Subject: "subject " + id}, nil
+}
+
+func (m *memBox) FetchHeadersMany(ctx context.Context, ids []string) (map[string]domain.MessageHeaders, map[string]error) {
+	got, failures := map[string]domain.MessageHeaders{}, map[string]error{}
+	for _, id := range ids {
+		h, err := m.FetchHeaders(ctx, id)
+		if err != nil {
+			failures[id] = err
+		} else {
+			got[id] = h
+		}
+	}
+	return got, failures
+}
+func (m *memBox) BulkLimit() int   { return 0 }
+func (m *memBox) SetBulkLimit(int) {}
+func (m *memBox) CurationPlan(context.Context) (domain.CurationPlan, error) {
+	return domain.CurationPlan{Archive: domain.CurationDestination{Folder: "Archive"}, Trash: domain.CurationDestination{Folder: "Trash"}}, nil
+}
+
+type limitedBox struct {
+	*memBox
+	limit int
+}
+
+func (m *limitedBox) BulkLimit() int         { return m.limit }
+func (m *limitedBox) SetBulkLimit(limit int) { m.limit = limit }
+
 func newMemBox(msgs map[string]string) *memBox {
 	return &memBox{
 		msgs: msgs, seen: map[string]bool{},
@@ -121,6 +154,57 @@ func TestServiceRoutingAndReads(t *testing.T) {
 	}
 }
 
+func TestMessagePagesAndBulkLimit(t *testing.T) {
+	box := newMemBox(map[string]string{"a": "x", "b": "y"})
+	svc := application.NewService(box, nil)
+	svc.SetBulkLimit(7)
+	if svc.BulkLimit() != 7 {
+		t.Fatalf("bulk limit = %d", svc.BulkLimit())
+	}
+	page, err := svc.ListMessages(t.Context(), "", "", domain.ScopeUnread, 1, 1, true)
+	if err != nil || page.Total != 2 || len(page.IDs) != 1 || len(page.Messages) != 1 || page.Messages[0].Subject == "" {
+		t.Fatalf("page = %#v, err %v", page, err)
+	}
+	page, err = svc.SearchMessages(t.Context(), "", "", "x", domain.ScopeUnread, 0, 1, true)
+	if err != nil || page.Total != 1 || len(page.Messages) != 1 {
+		t.Fatalf("search page = %#v, err %v", page, err)
+	}
+	if _, err := svc.ListMessages(t.Context(), "", "", domain.ScopeUnread, -1, 1, false); err == nil {
+		t.Fatal("negative offset accepted")
+	}
+	if _, err := svc.SearchMessages(t.Context(), "", "", "x", "bad", 0, 1, false); err == nil {
+		t.Fatal("invalid scope accepted")
+	}
+	if _, err := svc.ListMessages(t.Context(), "missing", "", domain.ScopeUnread, 0, 1, false); err == nil {
+		t.Fatal("list page accepted unknown account")
+	}
+	if _, err := svc.SearchMessages(t.Context(), "missing", "", "x", domain.ScopeUnread, 0, 1, false); err == nil {
+		t.Fatal("search page accepted unknown account")
+	}
+	if _, err := svc.Folders(t.Context(), "missing"); err == nil {
+		t.Fatal("folder listing accepted unknown account")
+	}
+	if _, err := svc.ReadHeaders(t.Context(), "", "", "missing"); !errors.Is(err, domain.ErrBadID) {
+		t.Fatalf("header fetch error = %v", err)
+	}
+	if _, err := svc.CurationPlan(t.Context(), "", ""); err != nil {
+		t.Fatalf("curation plan = %v", err)
+	}
+}
+
+func TestServiceBulkLimitUsesProviderAndForwardsToAccounts(t *testing.T) {
+	defaultBox := &limitedBox{memBox: newMemBox(nil), limit: 12}
+	accountBox := &limitedBox{memBox: newMemBox(nil), limit: 3}
+	svc := application.NewService(defaultBox, map[string]domain.Mailbox{"other": accountBox})
+	if svc.BulkLimit() != 12 {
+		t.Fatalf("provider limit = %d", svc.BulkLimit())
+	}
+	svc.SetBulkLimit(0)
+	if svc.BulkLimit() != domain.MaxBulkIDs || defaultBox.limit != domain.MaxBulkIDs || accountBox.limit != domain.MaxBulkIDs {
+		t.Fatalf("reset limits service=%d default=%d account=%d", svc.BulkLimit(), defaultBox.limit, accountBox.limit)
+	}
+}
+
 func TestServiceSearchFallbackAndFolders(t *testing.T) {
 	// bareBox lacks Searcher: the service scans.
 	inner := newMemBox(map[string]string{
@@ -193,6 +277,12 @@ func TestServiceMove(t *testing.T) {
 	if err := svc.Move(t.Context(), "", "", "a.eml", ""); !errors.Is(err, domain.ErrBadFolder) {
 		t.Errorf("Move empty destination = %v, want ErrBadFolder", err)
 	}
+	if _, err := svc.MoveMany(t.Context(), "", "", []string{"a.eml"}, ""); !errors.Is(err, domain.ErrBadFolder) {
+		t.Errorf("MoveMany empty destination = %v, want ErrBadFolder", err)
+	}
+	if _, err := svc.MoveMany(t.Context(), "missing", "", []string{"a.eml"}, "Work"); err == nil {
+		t.Error("MoveMany accepted an unknown account")
+	}
 	bare := application.NewService(bareBox{newMemBox(nil)}, nil)
 	if err := bare.Move(t.Context(), "", "", "a.eml", "Work"); err == nil {
 		t.Error("Move on backend without Mover accepted")
@@ -223,8 +313,44 @@ func TestSwitchableSwapAndForwarding(t *testing.T) {
 	if err := sw.Archive(t.Context(), "b.eml"); err != nil {
 		t.Errorf("archive: %v", err)
 	}
+	if err := sw.Move(t.Context(), "b.eml", "Work"); err != nil || b.moved["b.eml"] != "Work" {
+		t.Errorf("move: %v", err)
+	}
+	if _, err := sw.CurationPlan(t.Context()); err != nil {
+		t.Errorf("curation plan: %v", err)
+	}
+	if sw.BulkLimit() != domain.MaxBulkIDs {
+		t.Errorf("default bulk limit = %d", sw.BulkLimit())
+	}
+	sw.SetBulkLimit(23)
+	if got, failures := sw.FetchHeadersMany(t.Context(), []string{"b.eml"}); len(got) != 1 || len(failures) != 0 {
+		t.Errorf("batch headers: got=%v failures=%v", got, failures)
+	}
+	if got, failures := sw.FetchHeadersMany(t.Context(), []string{"missing"}); len(got) != 0 || len(failures) != 1 {
+		t.Errorf("missing batch headers: got=%v failures=%v", got, failures)
+	}
+	sw.Swap(bareBox{newMemBox(map[string]string{"b.eml": "body"})})
+	if got, failures := sw.FetchHeadersMany(t.Context(), []string{"b.eml"}); len(got) != 0 || len(failures) != 1 {
+		t.Errorf("headers unsupported: got=%v failures=%v", got, failures)
+	}
+	sw.Swap(b)
 	if _, err := sw.InFolder(t.Context(), "INBOX"); err != nil {
 		t.Errorf("infolder: %v", err)
+	}
+}
+
+type selfAddressSender struct{ countingSender }
+
+func (selfAddressSender) From() string { return "sender@example.org" }
+
+func TestSwitchableSenderFromTracksCurrentSender(t *testing.T) {
+	sender := application.NewSwitchableSender(&selfAddressSender{})
+	if got := sender.From(); got != "sender@example.org" {
+		t.Fatalf("From() = %q", got)
+	}
+	sender.Swap(&countingSender{})
+	if got := sender.From(); got != "" {
+		t.Fatalf("From() without address = %q", got)
 	}
 }
 

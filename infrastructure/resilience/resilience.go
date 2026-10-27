@@ -123,6 +123,21 @@ func Wrap(mb domain.Mailbox, cfg Config) *Mailbox {
 	}
 }
 
+// BulkLimit returns the wrapped mailbox's configured cap or the default.
+func (r *Mailbox) BulkLimit() int {
+	if p, ok := r.mb.(domain.BulkLimitProvider); ok && p.BulkLimit() > 0 {
+		return p.BulkLimit()
+	}
+	return domain.MaxBulkIDs
+}
+
+// SetBulkLimit forwards cap configuration to the wrapped backend.
+func (r *Mailbox) SetBulkLimit(limit int) {
+	if setter, ok := r.mb.(domain.BulkLimitSetter); ok {
+		setter.SetBulkLimit(limit)
+	}
+}
+
 // execute runs fn as breaker(retry(timeout(fn))): the breaker sees the
 // final outcome after retries, each attempt individually bounded.
 //
@@ -158,13 +173,59 @@ func (r *Mailbox) Fetch(ctx context.Context, id string) ([]byte, error) {
 	return v.([]byte), nil
 }
 
+// FetchHeaders forwards the optional header capability through resilience.
+func (r *Mailbox) FetchHeaders(ctx context.Context, id string) (domain.MessageHeaders, error) {
+	fetcher, ok := r.mb.(domain.HeaderFetcher)
+	if !ok {
+		return domain.MessageHeaders{}, errors.New("briefkasten: backend cannot fetch message headers")
+	}
+	v, err := r.execute(ctx, func(ctx context.Context) (any, error) {
+		return fetcher.FetchHeaders(ctx, id)
+	})
+	if err != nil {
+		return domain.MessageHeaders{}, err
+	}
+	return v.(domain.MessageHeaders), nil
+}
+
+// FetchHeadersMany forwards a batch through the resilience pipeline.
+func (r *Mailbox) FetchHeadersMany(ctx context.Context, ids []string) (map[string]domain.MessageHeaders, map[string]error) {
+	result := make(map[string]domain.MessageHeaders, len(ids))
+	failures := make(map[string]error)
+	fetcher, ok := r.mb.(domain.BatchHeaderFetcher)
+	if !ok {
+		for _, id := range ids {
+			failures[id] = errors.New("briefkasten: backend cannot fetch message headers in a batch")
+		}
+		return result, failures
+	}
+	v, err := r.execute(ctx, func(ctx context.Context) (any, error) {
+		h, f := fetcher.FetchHeadersMany(ctx, ids)
+		return struct {
+			headers  map[string]domain.MessageHeaders
+			failures map[string]error
+		}{h, f}, nil
+	})
+	if err != nil {
+		for _, id := range ids {
+			failures[id] = err
+		}
+		return result, failures
+	}
+	out := v.(struct {
+		headers  map[string]domain.MessageHeaders
+		failures map[string]error
+	})
+	return out.headers, out.failures
+}
+
 // FetchMany reads a batch through the resilience pipeline. The whole
 // batch is one call through it — one backend operation, one timeout, one
 // verdict for the breaker — and without this forward the wrapped
 // backend's native batching would be invisible.
 func (r *Mailbox) FetchMany(ctx context.Context, ids []string) (domain.FetchResult, error) {
 	v, err := r.execute(ctx, func(ctx context.Context) (any, error) {
-		return fetchManyFallback(ctx, r.mb, ids)
+		return fetchManyFallback(ctx, r.mb, ids, r.BulkLimit())
 	})
 	if err != nil {
 		return domain.FetchResult{}, err
@@ -199,7 +260,7 @@ func (r *Mailbox) MarkSeen(ctx context.Context, id string) error {
 // towards the breaker rather than a hundred times.
 func (r *Mailbox) MarkSeenMany(ctx context.Context, ids []string) (domain.BulkResult, error) {
 	return r.bulk(ctx, func(ctx context.Context) (domain.BulkResult, error) {
-		return markSeenManyFallback(ctx, r.mb, ids)
+		return markSeenManyFallback(ctx, r.mb, ids, r.BulkLimit())
 	})
 }
 
@@ -208,14 +269,14 @@ func (r *Mailbox) MarkSeenMany(ctx context.Context, ids []string) (domain.BulkRe
 // and every batch would cost one round of commands per message.
 func (r *Mailbox) ArchiveMany(ctx context.Context, ids []string) (domain.BulkResult, error) {
 	return r.bulk(ctx, func(ctx context.Context) (domain.BulkResult, error) {
-		return curateManyFallback(ctx, r.mb, ids, false)
+		return curateManyFallback(ctx, r.mb, ids, false, r.BulkLimit())
 	})
 }
 
 // DeleteMany trashes a batch through the resilience pipeline.
 func (r *Mailbox) DeleteMany(ctx context.Context, ids []string) (domain.BulkResult, error) {
 	return r.bulk(ctx, func(ctx context.Context) (domain.BulkResult, error) {
-		return curateManyFallback(ctx, r.mb, ids, true)
+		return curateManyFallback(ctx, r.mb, ids, true, r.BulkLimit())
 	})
 }
 
@@ -351,7 +412,9 @@ func (r *Mailbox) Move(ctx context.Context, id, destination string) error {
 
 // MoveMany forwards a batch move or uses the individual-move fallback.
 func (r *Mailbox) MoveMany(ctx context.Context, ids []string, destination string) (domain.BulkResult, error) {
-	v, err := r.execute(ctx, func(ctx context.Context) (any, error) { return moveManyFallback(ctx, r.mb, ids, destination) })
+	v, err := r.execute(ctx, func(ctx context.Context) (any, error) {
+		return moveManyFallback(ctx, r.mb, ids, destination, r.BulkLimit())
+	})
 	if err != nil {
 		return domain.BulkResult{}, err
 	}
@@ -374,20 +437,24 @@ func (r *Mailbox) CurationPlan(ctx context.Context) (domain.CurationPlan, error)
 }
 
 var (
-	_ domain.Mailbox           = (*Mailbox)(nil)
-	_ domain.CurationInspector = (*Mailbox)(nil)
-	_ domain.ScopedMailbox     = (*Mailbox)(nil)
-	_ domain.Searcher          = (*Mailbox)(nil)
-	_ domain.ScopedSearcher    = (*Mailbox)(nil)
-	_ domain.FolderMailbox     = (*Mailbox)(nil)
-	_ domain.FolderManager     = (*Mailbox)(nil)
-	_ domain.Curator           = (*Mailbox)(nil)
-	_ domain.Mover             = (*Mailbox)(nil)
-	_ domain.BulkMailbox       = (*Mailbox)(nil)
-	_ domain.BulkCurator       = (*Mailbox)(nil)
-	_ domain.BulkMover         = (*Mailbox)(nil)
-	_ domain.BulkFetcher       = (*Mailbox)(nil)
-	_ domain.MessageSizer      = (*Mailbox)(nil)
+	_ domain.Mailbox            = (*Mailbox)(nil)
+	_ domain.CurationInspector  = (*Mailbox)(nil)
+	_ domain.ScopedMailbox      = (*Mailbox)(nil)
+	_ domain.Searcher           = (*Mailbox)(nil)
+	_ domain.ScopedSearcher     = (*Mailbox)(nil)
+	_ domain.HeaderFetcher      = (*Mailbox)(nil)
+	_ domain.BatchHeaderFetcher = (*Mailbox)(nil)
+	_ domain.BulkLimitProvider  = (*Mailbox)(nil)
+	_ domain.BulkLimitSetter    = (*Mailbox)(nil)
+	_ domain.FolderMailbox      = (*Mailbox)(nil)
+	_ domain.FolderManager      = (*Mailbox)(nil)
+	_ domain.Curator            = (*Mailbox)(nil)
+	_ domain.Mover              = (*Mailbox)(nil)
+	_ domain.BulkMailbox        = (*Mailbox)(nil)
+	_ domain.BulkCurator        = (*Mailbox)(nil)
+	_ domain.BulkMover          = (*Mailbox)(nil)
+	_ domain.BulkFetcher        = (*Mailbox)(nil)
+	_ domain.MessageSizer       = (*Mailbox)(nil)
 )
 
 // listFallback mirrors the application-layer scoped-list fallback for
@@ -405,8 +472,8 @@ func listFallback(ctx context.Context, mb domain.Mailbox, scope domain.Scope) ([
 // fetchManyFallback mirrors the application-layer batched-fetch
 // fallback: native batching when the backend has it, one fetch per id
 // otherwise — and in both cases the size pre-flight comes first.
-func fetchManyFallback(ctx context.Context, mb domain.Mailbox, ids []string) (domain.FetchResult, error) {
-	if err := domain.CheckBulkIDs(ids); err != nil {
+func fetchManyFallback(ctx context.Context, mb domain.Mailbox, ids []string, limit int) (domain.FetchResult, error) {
+	if err := domain.CheckBulkIDsLimit(ids, limit); err != nil {
 		return domain.FetchResult{}, err
 	}
 	if bf, ok := mb.(domain.BulkFetcher); ok {
@@ -460,8 +527,8 @@ func preflightFetchFallback(ctx context.Context, mb domain.Mailbox, ids []string
 
 // markSeenManyFallback mirrors the application-layer bulk fallback:
 // native batching when the backend has it, one call per id otherwise.
-func markSeenManyFallback(ctx context.Context, mb domain.Mailbox, ids []string) (domain.BulkResult, error) {
-	if err := domain.CheckBulkIDs(ids); err != nil {
+func markSeenManyFallback(ctx context.Context, mb domain.Mailbox, ids []string, limit int) (domain.BulkResult, error) {
+	if err := domain.CheckBulkIDsLimit(ids, limit); err != nil {
 		return domain.BulkResult{}, err
 	}
 	if bm, ok := mb.(domain.BulkMailbox); ok {
@@ -472,8 +539,8 @@ func markSeenManyFallback(ctx context.Context, mb domain.Mailbox, ids []string) 
 
 // curateManyFallback mirrors the application-layer bulk curation
 // fallback. trash selects delete over archive.
-func curateManyFallback(ctx context.Context, mb domain.Mailbox, ids []string, trash bool) (domain.BulkResult, error) {
-	if err := domain.CheckBulkIDs(ids); err != nil {
+func curateManyFallback(ctx context.Context, mb domain.Mailbox, ids []string, trash bool, limit int) (domain.BulkResult, error) {
+	if err := domain.CheckBulkIDsLimit(ids, limit); err != nil {
 		return domain.BulkResult{}, err
 	}
 	if bc, ok := mb.(domain.BulkCurator); ok {
@@ -492,8 +559,8 @@ func curateManyFallback(ctx context.Context, mb domain.Mailbox, ids []string, tr
 	return bulkEachFallback(ctx, ids, cu.Archive)
 }
 
-func moveManyFallback(ctx context.Context, mb domain.Mailbox, ids []string, destination string) (domain.BulkResult, error) {
-	if err := domain.CheckBulkIDs(ids); err != nil {
+func moveManyFallback(ctx context.Context, mb domain.Mailbox, ids []string, destination string, limit int) (domain.BulkResult, error) {
+	if err := domain.CheckBulkIDsLimit(ids, limit); err != nil {
 		return domain.BulkResult{}, err
 	}
 	if bm, ok := mb.(domain.BulkMover); ok {

@@ -240,8 +240,9 @@ func registerConfigTools(
 			mu.Lock()
 			defer mu.Unlock()
 			out := map[string]any{
-				"backend": cfg.ResolvedBackend(),
-				"maildir": cfg.Maildir,
+				"backend":    cfg.ResolvedBackend(),
+				"maildir":    cfg.Maildir,
+				"bulk_limit": cfg.effectiveBulkLimit(),
 				"imap": map[string]any{
 					"addr":     cfg.IMAP.Addr,
 					"username": cfg.IMAP.Username,

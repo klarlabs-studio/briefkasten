@@ -468,7 +468,8 @@ read, seen, archive, and delete take an id from any scope: a message that
 was processed long ago acts exactly like one still in the backlog. seen
 is idempotent — re-acknowledging read mail is not an error.
 
-read, seen, archive, and delete take several ids at once (max %d), and
+read, seen, archive, and delete take several ids at once (up to the
+configured bulk_limit, default %d), and
 report per id: what succeeded is listed, what did not is named with its
 reason on stderr, and nothing is rolled back. A batch that partly failed
 exits non-zero.

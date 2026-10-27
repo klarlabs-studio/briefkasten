@@ -39,6 +39,53 @@ type Mailbox interface {
 	MarkSeen(ctx context.Context, id string) error
 }
 
+// MessageHeaders contains the small, parsed envelope used for mail triage.
+type MessageHeaders struct {
+	From      string `json:"from"`
+	To        string `json:"to"`
+	Subject   string `json:"subject"`
+	Date      string `json:"date"`
+	MessageID string `json:"message_id"`
+}
+
+// MessageSummary is a mailbox message's identity and envelope for browsing.
+type MessageSummary struct {
+	ID string `json:"id"`
+	MessageHeaders
+}
+
+// MessagePage is a stable application query result for browsing messages.
+type MessagePage struct {
+	Messages []MessageSummary `json:"messages"`
+	IDs      []string         `json:"ids"`
+	Total    int              `json:"total"`
+	Offset   int              `json:"offset"`
+	Scope    Scope            `json:"scope"`
+}
+
+// HeaderFetcher is an optional capability for reading triage headers without
+// exposing message bodies to the caller.
+type HeaderFetcher interface {
+	FetchHeaders(ctx context.Context, id string) (MessageHeaders, error)
+}
+
+// BatchHeaderFetcher retrieves headers for several ids in one backend call.
+// The result contains one entry per requested id; missing or failed messages
+// are reported per id so callers can retain the other summaries.
+type BatchHeaderFetcher interface {
+	FetchHeadersMany(ctx context.Context, ids []string) (map[string]MessageHeaders, map[string]error)
+}
+
+// BulkLimitProvider exposes the batch ceiling enforced by a mailbox.
+type BulkLimitProvider interface {
+	BulkLimit() int
+}
+
+// BulkLimitSetter configures a mailbox's bulk-operation ceiling before use.
+type BulkLimitSetter interface {
+	SetBulkLimit(int)
+}
+
 // Scope selects which slice of a mailbox a listing or search covers.
 // Unread is the agent-facing default — the ingest backlog — while Read
 // and All open the already-processed mail for reference and recall.
@@ -323,7 +370,7 @@ type Mover interface {
 	Move(ctx context.Context, id, destination string) error
 }
 
-// MaxBulkIDs caps how many messages one bulk call may act on.
+// MaxBulkIDs is the default cap on messages one bulk call may act on.
 //
 // A batch is authorised by a single human gesture, so the cap is what
 // bounds the blast radius of that one "yes": a confirmation covering a
@@ -391,12 +438,21 @@ var ErrFetchTooLarge = errors.New("briefkasten: batch too large to fetch")
 // Duplicates are refused for the same reason the result is keyed by id —
 // an id appearing twice would make its outcome ambiguous.
 func CheckBulkIDs(ids []string) error {
-	if len(ids) == 0 {
-		return fmt.Errorf("%w: no ids given (want 1 to %d)", ErrBulkSize, MaxBulkIDs)
+	return CheckBulkIDsLimit(ids, MaxBulkIDs)
+}
+
+// CheckBulkIDsLimit validates a batch against the configured limit. A
+// non-positive limit selects MaxBulkIDs, preserving the default contract.
+func CheckBulkIDsLimit(ids []string, limit int) error {
+	if limit <= 0 {
+		limit = MaxBulkIDs
 	}
-	if len(ids) > MaxBulkIDs {
+	if len(ids) == 0 {
+		return fmt.Errorf("%w: no ids given (want 1 to %d)", ErrBulkSize, limit)
+	}
+	if len(ids) > limit {
 		return fmt.Errorf("%w: %d ids exceeds the %d-id cap for one call — split the batch",
-			ErrBulkSize, len(ids), MaxBulkIDs)
+			ErrBulkSize, len(ids), limit)
 	}
 	seen := make(map[string]struct{}, len(ids))
 	for _, id := range ids {

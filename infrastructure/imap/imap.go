@@ -15,6 +15,7 @@ import (
 
 	"go.klarlabs.de/briefkasten/domain"
 	"go.klarlabs.de/briefkasten/infrastructure/auth"
+	"go.klarlabs.de/briefkasten/infrastructure/mailheaders"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
@@ -22,6 +23,8 @@ import (
 
 // Config configures an Mailbox.
 type Config struct {
+	// MaxBulkIDs caps one multi-message operation; zero uses the default.
+	MaxBulkIDs int
 	// Addr is the IMAP server address (host:port). Required.
 	Addr string
 	// Username and Password authenticate via LOGIN.
@@ -66,6 +69,22 @@ type Mailbox struct {
 	mu     sync.Mutex
 	idle   *imapclient.Client
 	idleAt time.Time
+}
+
+// BulkLimit returns the configured batch ceiling.
+func (m *Mailbox) BulkLimit() int {
+	if m.cfg.MaxBulkIDs > 0 {
+		return m.cfg.MaxBulkIDs
+	}
+	return domain.MaxBulkIDs
+}
+
+// SetBulkLimit changes the batch ceiling. Configure before sharing the mailbox.
+func (m *Mailbox) SetBulkLimit(limit int) {
+	if limit <= 0 {
+		limit = domain.MaxBulkIDs
+	}
+	m.cfg.MaxBulkIDs = limit
 }
 
 // New validates cfg and returns an Mailbox.
@@ -331,7 +350,11 @@ func (m *Mailbox) List(ctx context.Context, scope domain.Scope) ([]string, error
 	return m.uidSearch(ctx, criteria, "search "+string(scope))
 }
 
-var _ domain.ScopedMailbox = (*Mailbox)(nil)
+var (
+	_ domain.ScopedMailbox      = (*Mailbox)(nil)
+	_ domain.HeaderFetcher      = (*Mailbox)(nil)
+	_ domain.BatchHeaderFetcher = (*Mailbox)(nil)
+)
 
 // scopeCriteria translates a scope into IMAP search criteria. ScopeAll
 // searches with no flag restriction, which is IMAP's ALL.
@@ -400,6 +423,90 @@ func (m *Mailbox) Fetch(ctx context.Context, id string) ([]byte, error) {
 		return nil, err
 	}
 	return raw, nil
+}
+
+// FetchHeaders reads triage headers while leaving the message's read state intact.
+func (m *Mailbox) FetchHeaders(ctx context.Context, id string) (domain.MessageHeaders, error) {
+	uid, err := parseUID(id)
+	if err != nil {
+		return domain.MessageHeaders{}, err
+	}
+	var raw []byte
+	err = m.withConn(ctx, func(c *imapclient.Client) error {
+		section := &imap.FetchItemBodySection{
+			Peek: true, Specifier: imap.PartSpecifierHeader,
+			HeaderFields: []string{"From", "To", "Subject", "Date", "Message-Id"},
+		}
+		msgs, err := awaitValue(ctx, c, "fetch headers "+id, c.Fetch(imap.UIDSetNum(uid), &imap.FetchOptions{
+			UID: true, BodySection: []*imap.FetchItemBodySection{section},
+		}).Collect, cmdTimeout)
+		if err != nil {
+			return fmt.Errorf("imap: fetch headers %s: %w", id, err)
+		}
+		if len(msgs) == 0 {
+			return fmt.Errorf("%w: %s", domain.ErrBadID, id)
+		}
+		if raw = msgs[0].FindBodySection(section); raw == nil {
+			return fmt.Errorf("imap: fetch headers %s: no header section in response", id)
+		}
+		return nil
+	})
+	if err != nil {
+		return domain.MessageHeaders{}, err
+	}
+	return mailheaders.Parse(raw), nil
+}
+
+// FetchHeadersMany retrieves the requested envelopes with one IMAP UID FETCH.
+func (m *Mailbox) FetchHeadersMany(ctx context.Context, ids []string) (map[string]domain.MessageHeaders, map[string]error) {
+	result := make(map[string]domain.MessageHeaders, len(ids))
+	failures := make(map[string]error)
+	refs := make([]uidRef, 0, len(ids))
+	byUID := make(map[imap.UID]string, len(ids))
+	for _, id := range ids {
+		uid, err := parseUID(id)
+		if err != nil {
+			failures[id] = err
+			continue
+		}
+		refs = append(refs, uidRef{id: id, uid: uid})
+		byUID[uid] = id
+	}
+	if len(refs) == 0 {
+		return result, failures
+	}
+	var msgs []*imapclient.FetchMessageBuffer
+	err := m.withConn(ctx, func(c *imapclient.Client) error {
+		section := &imap.FetchItemBodySection{Peek: true, Specifier: imap.PartSpecifierHeader, HeaderFields: []string{"From", "To", "Subject", "Date", "Message-Id"}}
+		var err error
+		msgs, err = awaitValue(ctx, c, "fetch message headers", c.Fetch(uidSetOf(refs), &imap.FetchOptions{UID: true, BodySection: []*imap.FetchItemBodySection{section}}).Collect, cmdTimeout)
+		if err != nil {
+			return err
+		}
+		for _, msg := range msgs {
+			id := byUID[msg.UID]
+			raw := msg.FindBodySection(section)
+			if raw == nil {
+				failures[id] = errors.New("imap: no header section in response")
+				continue
+			}
+			result[id] = mailheaders.Parse(raw)
+		}
+		return nil
+	})
+	if err != nil {
+		for _, ref := range refs {
+			failures[ref.id] = err
+		}
+		return result, failures
+	}
+	for _, ref := range refs {
+		id := byUID[ref.uid]
+		if _, ok := result[id]; !ok {
+			failures[id] = fmt.Errorf("%w: %s", domain.ErrBadID, id)
+		}
+	}
+	return result, failures
 }
 
 // Sizes reports the RFC822.SIZE of each id in one UID FETCH, whatever
@@ -473,7 +580,7 @@ func fetchSizes(ctx context.Context, c *imapclient.Client, refs []uidRef) (map[i
 // call as a whole, because a partial answer to "give me these fifty
 // messages" is not something a caller asked for.
 func (m *Mailbox) FetchMany(ctx context.Context, ids []string) (domain.FetchResult, error) {
-	if err := domain.CheckBulkIDs(ids); err != nil {
+	if err := domain.CheckBulkIDsLimit(ids, m.BulkLimit()); err != nil {
 		return domain.FetchResult{}, err
 	}
 	refs, bad := parseRefs(ids)
@@ -661,7 +768,7 @@ func (m *Mailbox) MarkSeen(ctx context.Context, id string) error {
 // id the mailbox does not hold is never claimed as marked, and marking
 // an already-seen message succeeds unchanged.
 func (m *Mailbox) MarkSeenMany(ctx context.Context, ids []string) (domain.BulkResult, error) {
-	if err := domain.CheckBulkIDs(ids); err != nil {
+	if err := domain.CheckBulkIDsLimit(ids, m.BulkLimit()); err != nil {
 		return domain.BulkResult{}, err
 	}
 	res, known := splitParsable(ids)
@@ -1254,7 +1361,7 @@ func (m *Mailbox) Move(ctx context.Context, id, destination string) error {
 
 // MoveMany files each explicit id into an existing folder and reports per-id outcomes.
 func (m *Mailbox) MoveMany(ctx context.Context, ids []string, destination string) (domain.BulkResult, error) {
-	if err := domain.CheckBulkIDs(ids); err != nil {
+	if err := domain.CheckBulkIDsLimit(ids, m.BulkLimit()); err != nil {
 		return domain.BulkResult{}, err
 	}
 	res, known := splitParsable(ids)
@@ -1306,7 +1413,7 @@ func (m *Mailbox) MoveMany(ctx context.Context, ids []string, destination string
 // reversible by us — "un-copying" by deleting the copy is more dangerous
 // than an honest report of what landed where.
 func (m *Mailbox) fileManyTo(ctx context.Context, t curationTarget, ids []string) (domain.BulkResult, error) {
-	if err := domain.CheckBulkIDs(ids); err != nil {
+	if err := domain.CheckBulkIDsLimit(ids, m.BulkLimit()); err != nil {
 		return domain.BulkResult{}, err
 	}
 	res, known := splitParsable(ids)

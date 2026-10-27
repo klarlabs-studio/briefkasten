@@ -165,6 +165,11 @@ const InboxResourceURI = "email://inbox"
 // NewDirMailbox prepares a maildir-style directory backend.
 func NewDirMailbox(root string) (*DirMailbox, error) { return maildir.New(root) }
 
+// NewDirMailboxWithBulkLimit constructs a Maildir with a configured batch cap.
+func NewDirMailboxWithBulkLimit(root string, limit int) (*DirMailbox, error) {
+	return maildir.NewWithBulkLimit(root, limit)
+}
+
 // NewIMAPMailbox validates cfg and returns an IMAP backend.
 func NewIMAPMailbox(cfg IMAPConfig) (*IMAPMailbox, error) { return imap.New(cfg) }
 

@@ -19,14 +19,39 @@ import (
 // Service exposes the mailbox use cases over a default mailbox and any
 // named accounts.
 type Service struct {
-	mailbox  domain.Mailbox
-	accounts map[string]domain.Mailbox
+	mailbox   domain.Mailbox
+	accounts  map[string]domain.Mailbox
+	bulkLimit int
 }
 
 // NewService wires the use cases.
 func NewService(mailbox domain.Mailbox, accounts map[string]domain.Mailbox) *Service {
-	return &Service{mailbox: mailbox, accounts: accounts}
+	limit := domain.MaxBulkIDs
+	if p, ok := mailbox.(domain.BulkLimitProvider); ok && p.BulkLimit() > 0 {
+		limit = p.BulkLimit()
+	}
+	return &Service{mailbox: mailbox, accounts: accounts, bulkLimit: limit}
 }
+
+// SetBulkLimit changes the maximum IDs accepted by bulk use cases. Values
+// less than one restore the default. Configure before sharing the service.
+func (s *Service) SetBulkLimit(limit int) {
+	if limit <= 0 {
+		limit = domain.MaxBulkIDs
+	}
+	s.bulkLimit = limit
+	if setter, ok := s.mailbox.(domain.BulkLimitSetter); ok {
+		setter.SetBulkLimit(limit)
+	}
+	for _, box := range s.accounts {
+		if setter, ok := box.(domain.BulkLimitSetter); ok {
+			setter.SetBulkLimit(limit)
+		}
+	}
+}
+
+// BulkLimit returns the effective bulk ID cap.
+func (s *Service) BulkLimit() int { return s.bulkLimit }
 
 // Resolve routes an optional account and folder to the target mailbox.
 func (s *Service) Resolve(ctx context.Context, account, folder string) (domain.Mailbox, error) {
@@ -84,6 +109,82 @@ func (s *Service) Read(ctx context.Context, account, folder, id string) ([]byte,
 	return box.Fetch(ctx, id)
 }
 
+// ReadHeaders returns parsed triage headers through the mailbox's optional
+// header-only capability, keeping message-body handling in the infrastructure.
+func (s *Service) ReadHeaders(ctx context.Context, account, folder, id string) (domain.MessageHeaders, error) {
+	box, err := s.Resolve(ctx, account, folder)
+	if err != nil {
+		return domain.MessageHeaders{}, err
+	}
+	fetcher, ok := box.(domain.HeaderFetcher)
+	if !ok {
+		return domain.MessageHeaders{}, errors.New("briefkasten: backend cannot fetch message headers")
+	}
+	return fetcher.FetchHeaders(ctx, id)
+}
+
+// ListMessages returns a paginated message page for a scope. When includeHeaders
+// is true, summaries are assembled through the mailbox header capability.
+func (s *Service) ListMessages(ctx context.Context, account, folder string, scope domain.Scope, offset, limit int, includeHeaders bool) (domain.MessagePage, error) {
+	ids, err := s.List(ctx, account, folder, scope)
+	if err != nil {
+		return domain.MessagePage{}, err
+	}
+	return s.messagePage(ctx, account, folder, scope, ids, offset, limit, includeHeaders)
+}
+
+// SearchMessages returns a paginated message page for a query and scope.
+func (s *Service) SearchMessages(ctx context.Context, account, folder, query string, scope domain.Scope, offset, limit int, includeHeaders bool) (domain.MessagePage, error) {
+	ids, err := s.SearchScope(ctx, account, folder, query, scope)
+	if err != nil {
+		return domain.MessagePage{}, err
+	}
+	return s.messagePage(ctx, account, folder, scope, ids, offset, limit, includeHeaders)
+}
+
+func (s *Service) messagePage(ctx context.Context, account, folder string, scope domain.Scope, ids []string, offset, limit int, includeHeaders bool) (domain.MessagePage, error) {
+	if offset < 0 || limit < 0 {
+		return domain.MessagePage{}, errors.New("briefkasten: offset and limit must not be negative")
+	}
+	scope, err := domain.ParseScope(string(scope))
+	if err != nil {
+		return domain.MessagePage{}, err
+	}
+	page := domain.MessagePage{IDs: []string{}, Messages: []domain.MessageSummary{}, Total: len(ids), Offset: offset, Scope: scope}
+	if offset >= len(ids) {
+		return page, nil
+	}
+	ids = ids[offset:]
+	if limit > 0 && limit < len(ids) {
+		ids = ids[:limit]
+	}
+	page.IDs = append(page.IDs, ids...)
+	if !includeHeaders {
+		return page, nil
+	}
+	box, err := s.Resolve(ctx, account, folder)
+	if err != nil {
+		return domain.MessagePage{}, err
+	}
+	fetcher, ok := box.(domain.BatchHeaderFetcher)
+	if !ok {
+		return domain.MessagePage{}, errors.New("briefkasten: backend cannot fetch message headers in a batch")
+	}
+	headers, failures := fetcher.FetchHeadersMany(ctx, ids)
+	page.Messages = make([]domain.MessageSummary, 0, len(ids))
+	for _, id := range ids {
+		if err := failures[id]; err != nil {
+			return domain.MessagePage{}, fmt.Errorf("briefkasten: read headers for %q: %w", id, err)
+		}
+		h, ok := headers[id]
+		if !ok {
+			return domain.MessagePage{}, fmt.Errorf("briefkasten: backend omitted headers for %q", id)
+		}
+		page.Messages = append(page.Messages, domain.MessageSummary{ID: id, MessageHeaders: h})
+	}
+	return page, nil
+}
+
 // ReadMany returns the raw bytes for a batch of messages, reporting the
 // outcome per id. The batch is measured before anything is read and
 // refused whole if it would exceed domain.MaxFetchBytes.
@@ -92,7 +193,7 @@ func (s *Service) ReadMany(ctx context.Context, account, folder string, ids []st
 	if err != nil {
 		return domain.FetchResult{}, err
 	}
-	return fetchMany(ctx, box, ids)
+	return fetchMany(ctx, box, ids, s.bulkLimit)
 }
 
 // MarkSeen acknowledges a processed message. Idempotent: a message that
@@ -112,7 +213,7 @@ func (s *Service) MarkSeenMany(ctx context.Context, account, folder string, ids 
 	if err != nil {
 		return domain.BulkResult{}, err
 	}
-	return markSeenMany(ctx, box, ids)
+	return markSeenMany(ctx, box, ids, s.bulkLimit)
 }
 
 // Search finds unread messages matching the query. Backends with a
@@ -262,7 +363,7 @@ func (s *Service) MoveMany(
 	if err != nil {
 		return domain.BulkResult{}, err
 	}
-	return moveMany(ctx, box, ids, destination)
+	return moveMany(ctx, box, ids, destination, s.bulkLimit)
 }
 
 // ArchiveMany files a batch of messages away, reporting the outcome per
@@ -273,7 +374,7 @@ func (s *Service) ArchiveMany(ctx context.Context, account, folder string, ids [
 	if err != nil {
 		return domain.BulkResult{}, err
 	}
-	return curateMany(ctx, box, ids, actionArchive)
+	return curateMany(ctx, box, ids, actionArchive, s.bulkLimit)
 }
 
 // DeleteMany moves a batch of messages to trash, reporting the outcome
@@ -284,7 +385,7 @@ func (s *Service) DeleteMany(ctx context.Context, account, folder string, ids []
 	if err != nil {
 		return domain.BulkResult{}, err
 	}
-	return curateMany(ctx, box, ids, actionDelete)
+	return curateMany(ctx, box, ids, actionDelete, s.bulkLimit)
 }
 
 // CurationPlan reports where Archive and Delete would file, without
@@ -372,8 +473,8 @@ func fetchEach(
 // measure the whole set in the same round trip it would spend anyway.
 // Everything else is measured here, before the loop starts, because
 // discovering the size while reading has already spent the memory.
-func fetchMany(ctx context.Context, mb domain.Mailbox, ids []string) (domain.FetchResult, error) {
-	if err := domain.CheckBulkIDs(ids); err != nil {
+func fetchMany(ctx context.Context, mb domain.Mailbox, ids []string, limit int) (domain.FetchResult, error) {
+	if err := domain.CheckBulkIDsLimit(ids, limit); err != nil {
 		return domain.FetchResult{}, err
 	}
 	if bf, ok := mb.(domain.BulkFetcher); ok {
@@ -422,8 +523,8 @@ func preflightFetch(ctx context.Context, mb domain.Mailbox, ids []string) error 
 
 // markSeenMany acknowledges a batch: natively when the backend batches,
 // id by id otherwise.
-func markSeenMany(ctx context.Context, mb domain.Mailbox, ids []string) (domain.BulkResult, error) {
-	if err := domain.CheckBulkIDs(ids); err != nil {
+func markSeenMany(ctx context.Context, mb domain.Mailbox, ids []string, limit int) (domain.BulkResult, error) {
+	if err := domain.CheckBulkIDsLimit(ids, limit); err != nil {
 		return domain.BulkResult{}, err
 	}
 	if bm, ok := mb.(domain.BulkMailbox); ok {
@@ -437,8 +538,9 @@ func markSeenMany(ctx context.Context, mb domain.Mailbox, ids []string) (domain.
 // batch natively.
 func curateMany(
 	ctx context.Context, mb domain.Mailbox, ids []string, action curationAction,
+	limit int,
 ) (domain.BulkResult, error) {
-	if err := domain.CheckBulkIDs(ids); err != nil {
+	if err := domain.CheckBulkIDsLimit(ids, limit); err != nil {
 		return domain.BulkResult{}, err
 	}
 	if bc, ok := mb.(domain.BulkCurator); ok {
@@ -459,8 +561,8 @@ func curateMany(
 
 // moveMany dispatches to native batch support or loops through the
 // single-message mover. The batch cap is consistent across backends.
-func moveMany(ctx context.Context, mb domain.Mailbox, ids []string, destination string) (domain.BulkResult, error) {
-	if err := domain.CheckBulkIDs(ids); err != nil {
+func moveMany(ctx context.Context, mb domain.Mailbox, ids []string, destination string, limit int) (domain.BulkResult, error) {
+	if err := domain.CheckBulkIDsLimit(ids, limit); err != nil {
 		return domain.BulkResult{}, err
 	}
 	if err := domain.CheckFolderName(destination); err != nil {

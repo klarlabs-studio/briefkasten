@@ -282,3 +282,29 @@ func TestSwitchableForwardsBulkCapability(t *testing.T) {
 		t.Error("bulk delete on a curatorless backend accepted")
 	}
 }
+
+func TestServiceBulkLimitIsConfigurable(t *testing.T) {
+	mb := newMemBox(map[string]string{"a": "a", "b": "b", "c": "c"})
+	svc := application.NewService(mb, nil)
+	svc.SetBulkLimit(2)
+	_, err := svc.MarkSeenMany(t.Context(), "", "", []string{"a", "b", "c"})
+	if !errors.Is(err, domain.ErrBulkSize) || !strings.Contains(err.Error(), "2-id cap") {
+		t.Fatalf("bulk limit error = %v, want configured cap of 2", err)
+	}
+}
+
+func TestServiceBulkLimitCanBeRaisedAboveDefault(t *testing.T) {
+	msgs := make(map[string]string, domain.MaxBulkIDs+1)
+	ids := make([]string, domain.MaxBulkIDs+1)
+	for i := range ids {
+		id := fmt.Sprintf("%03d", i)
+		ids[i] = id
+		msgs[id] = "body"
+	}
+	svc := application.NewService(newMemBox(msgs), nil)
+	svc.SetBulkLimit(domain.MaxBulkIDs + 1)
+	result, err := svc.MarkSeenMany(t.Context(), "", "", ids)
+	if err != nil || len(result.Succeeded) != len(ids) {
+		t.Fatalf("raised batch cap result = %d successes, err %v", len(result.Succeeded), err)
+	}
+}

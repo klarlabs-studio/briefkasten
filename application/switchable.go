@@ -34,6 +34,21 @@ func (s *Switchable) current() domain.Mailbox {
 	return s.mb
 }
 
+// BulkLimit returns the active backend's cap or the default.
+func (s *Switchable) BulkLimit() int {
+	if p, ok := s.current().(domain.BulkLimitProvider); ok && p.BulkLimit() > 0 {
+		return p.BulkLimit()
+	}
+	return domain.MaxBulkIDs
+}
+
+// SetBulkLimit applies a cap to the active backend when it supports tuning.
+func (s *Switchable) SetBulkLimit(limit int) {
+	if setter, ok := s.current().(domain.BulkLimitSetter); ok {
+		setter.SetBulkLimit(limit)
+	}
+}
+
 // ListUnread lists the current backend's unread ids.
 func (s *Switchable) ListUnread(ctx context.Context) ([]string, error) {
 	return s.current().ListUnread(ctx)
@@ -49,11 +64,45 @@ func (s *Switchable) Fetch(ctx context.Context, id string) ([]byte, error) {
 	return s.current().Fetch(ctx, id)
 }
 
+// FetchHeaders forwards the header-only capability to the active backend.
+func (s *Switchable) FetchHeaders(ctx context.Context, id string) (domain.MessageHeaders, error) {
+	fetcher, ok := s.current().(domain.HeaderFetcher)
+	if !ok {
+		return domain.MessageHeaders{}, errors.New("briefkasten: backend cannot fetch message headers")
+	}
+	return fetcher.FetchHeaders(ctx, id)
+}
+
+// FetchHeadersMany forwards or safely falls back to individual header reads.
+func (s *Switchable) FetchHeadersMany(ctx context.Context, ids []string) (map[string]domain.MessageHeaders, map[string]error) {
+	if fetcher, ok := s.current().(domain.BatchHeaderFetcher); ok {
+		return fetcher.FetchHeadersMany(ctx, ids)
+	}
+	result := make(map[string]domain.MessageHeaders, len(ids))
+	failures := make(map[string]error)
+	fetcher, ok := s.current().(domain.HeaderFetcher)
+	if !ok {
+		for _, id := range ids {
+			failures[id] = errors.New("briefkasten: backend cannot fetch message headers")
+		}
+		return result, failures
+	}
+	for _, id := range ids {
+		h, err := fetcher.FetchHeaders(ctx, id)
+		if err != nil {
+			failures[id] = err
+		} else {
+			result[id] = h
+		}
+	}
+	return result, failures
+}
+
 // FetchMany forwards to the backend's BulkFetcher, or pre-flights and
 // loops. Without the forward the capability would vanish behind this
 // decorator and every batch would cost one round trip per message.
 func (s *Switchable) FetchMany(ctx context.Context, ids []string) (domain.FetchResult, error) {
-	return fetchMany(ctx, s.current(), ids)
+	return fetchMany(ctx, s.current(), ids, s.BulkLimit())
 }
 
 // Sizes forwards to the backend's MessageSizer. A backend that cannot
@@ -73,7 +122,7 @@ func (s *Switchable) MarkSeen(ctx context.Context, id string) error {
 
 // MarkSeenMany forwards to the backend's BulkMailbox, or loops.
 func (s *Switchable) MarkSeenMany(ctx context.Context, ids []string) (domain.BulkResult, error) {
-	return markSeenMany(ctx, s.current(), ids)
+	return markSeenMany(ctx, s.current(), ids, s.BulkLimit())
 }
 
 // Search forwards to the backend's Searcher or the generic fallback.
@@ -159,18 +208,18 @@ func (s *Switchable) Move(ctx context.Context, id, destination string) error {
 // Curator. Without the forward the capability would vanish behind this
 // decorator and every batch would silently fall back to one call per id.
 func (s *Switchable) ArchiveMany(ctx context.Context, ids []string) (domain.BulkResult, error) {
-	return curateMany(ctx, s.current(), ids, actionArchive)
+	return curateMany(ctx, s.current(), ids, actionArchive, s.BulkLimit())
 }
 
 // DeleteMany forwards to the backend's BulkCurator, or loops over its
 // Curator.
 func (s *Switchable) DeleteMany(ctx context.Context, ids []string) (domain.BulkResult, error) {
-	return curateMany(ctx, s.current(), ids, actionDelete)
+	return curateMany(ctx, s.current(), ids, actionDelete, s.BulkLimit())
 }
 
 // MoveMany forwards a batch move or falls back to individual moves.
 func (s *Switchable) MoveMany(ctx context.Context, ids []string, destination string) (domain.BulkResult, error) {
-	return moveMany(ctx, s.current(), ids, destination)
+	return moveMany(ctx, s.current(), ids, destination, s.BulkLimit())
 }
 
 // CurationPlan forwards to the backend's inspector. The destinations
@@ -191,18 +240,22 @@ func (s *Switchable) CurationPlan(ctx context.Context) (domain.CurationPlan, err
 var errNoFolderManagement = errors.New("briefkasten: backend cannot create or delete folders")
 
 var (
-	_ domain.Mailbox           = (*Switchable)(nil)
-	_ domain.FolderManager     = (*Switchable)(nil)
-	_ domain.ScopedMailbox     = (*Switchable)(nil)
-	_ domain.Searcher          = (*Switchable)(nil)
-	_ domain.ScopedSearcher    = (*Switchable)(nil)
-	_ domain.FolderMailbox     = (*Switchable)(nil)
-	_ domain.Curator           = (*Switchable)(nil)
-	_ domain.Mover             = (*Switchable)(nil)
-	_ domain.CurationInspector = (*Switchable)(nil)
-	_ domain.BulkMailbox       = (*Switchable)(nil)
-	_ domain.BulkCurator       = (*Switchable)(nil)
-	_ domain.BulkMover         = (*Switchable)(nil)
-	_ domain.BulkFetcher       = (*Switchable)(nil)
-	_ domain.MessageSizer      = (*Switchable)(nil)
+	_ domain.Mailbox            = (*Switchable)(nil)
+	_ domain.FolderManager      = (*Switchable)(nil)
+	_ domain.ScopedMailbox      = (*Switchable)(nil)
+	_ domain.Searcher           = (*Switchable)(nil)
+	_ domain.ScopedSearcher     = (*Switchable)(nil)
+	_ domain.HeaderFetcher      = (*Switchable)(nil)
+	_ domain.BatchHeaderFetcher = (*Switchable)(nil)
+	_ domain.BulkLimitProvider  = (*Switchable)(nil)
+	_ domain.BulkLimitSetter    = (*Switchable)(nil)
+	_ domain.FolderMailbox      = (*Switchable)(nil)
+	_ domain.Curator            = (*Switchable)(nil)
+	_ domain.Mover              = (*Switchable)(nil)
+	_ domain.CurationInspector  = (*Switchable)(nil)
+	_ domain.BulkMailbox        = (*Switchable)(nil)
+	_ domain.BulkCurator        = (*Switchable)(nil)
+	_ domain.BulkMover          = (*Switchable)(nil)
+	_ domain.BulkFetcher        = (*Switchable)(nil)
+	_ domain.MessageSizer       = (*Switchable)(nil)
 )

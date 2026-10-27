@@ -138,6 +138,18 @@ func TestBuildMailboxErrors(t *testing.T) {
 	}
 }
 
+func TestBuildMailboxAppliesConfiguredBulkLimit(t *testing.T) {
+	cfg := &briefkasten.Config{Backend: "maildir", Maildir: t.TempDir(), BulkLimit: 2}
+	mb, _, err := cfg.BuildMailbox()
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, ok := mb.(interface{ BulkLimit() int })
+	if !ok || provider.BulkLimit() != 2 {
+		t.Fatalf("mailbox bulk limit = %v, want 2", mb)
+	}
+}
+
 func TestBuildWatcherUnknownBackend(t *testing.T) {
 	cfg := &briefkasten.Config{Backend: "carrier-pigeon"}
 	if w := cfg.BuildWatcher(); w != nil {
