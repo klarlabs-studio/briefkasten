@@ -311,6 +311,18 @@ type Curator interface {
 	Delete(ctx context.Context, id string) error
 }
 
+// Mover is an optional Mailbox capability: file a message into an
+// existing user-selected folder. The source mailbox is the receiver of
+// the call; destination is resolved by the backend in the account's
+// folder space. A move is a soft curation operation and never expunges
+// or destroys a message.
+//
+// Like every id-taking curation operation, Move resolves ids across the
+// whole source mailbox regardless of read state.
+type Mover interface {
+	Move(ctx context.Context, id, destination string) error
+}
+
 // MaxBulkIDs caps how many messages one bulk call may act on.
 //
 // A batch is authorised by a single human gesture, so the cap is what
@@ -582,6 +594,12 @@ type BulkCurator interface {
 	ArchiveMany(ctx context.Context, ids []string) (BulkResult, error)
 	// DeleteMany trashes each id and reports the outcome per id.
 	DeleteMany(ctx context.Context, ids []string) (BulkResult, error)
+}
+
+// BulkMover is the optional batched form of Mover. It only accepts
+// explicit ids and reports the result per id; there is no query form.
+type BulkMover interface {
+	MoveMany(ctx context.Context, ids []string, destination string) (BulkResult, error)
 }
 
 // CurationRoute names how a curation destination was decided. It exists
