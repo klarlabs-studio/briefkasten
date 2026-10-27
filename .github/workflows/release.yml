@@ -45,7 +45,9 @@ jobs:
         with:
           cosign-release: v3.1.2
       - name: Install nox
-        run: go install github.com/nox-hq/nox/cli@v1.54.0
+        run: |
+          GOBIN="$(go env GOPATH)/bin" go install github.com/nox-hq/nox/cli@v1.54.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: Generate dependency SBOM
         run: nox scan . --only deps --format cdx --output nox-sbom --offline --tracked-only
       - name: goreleaser
