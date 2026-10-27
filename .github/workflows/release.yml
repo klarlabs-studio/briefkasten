@@ -51,7 +51,7 @@ jobs:
         with:
           path: .
           format: cdx
-          output: nox-sbom
+          output: ${{ runner.temp }}/nox-sbom
           version: v1.54.0
           fail-on-findings: 'false'
           annotate: 'false'
