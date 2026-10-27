@@ -30,11 +30,10 @@ jobs:
       pull-requests: write # nox annotate — required by the reusable workflow
     secrets: inherit
     with:
-      go-version: "1.26.3" # match go.mod (reusable workflow runs GOTOOLCHAIN=local)
+      go-version: "1.27.3" # match go.mod (reusable workflow runs GOTOOLCHAIN=local)
       # The org-pinned golangci-lint v2.7.2 binary is built with go1.25 and
-      # refuses to lint a module targeting go1.26.3. v2.12.2 is built with
-      # go1.26 and is config-compatible; drop this override once the shared
+      # refuses to lint a module targeting go1.27.3. v2.15.0 supports go1.27.
       # workflow's default catches up.
-      golangci-version: "v2.12.2"
+      golangci-version: "v2.15.0"
       coverage: true
       cross-platform: false # Go library / MCP server — single-platform suffices

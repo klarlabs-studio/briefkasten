@@ -442,8 +442,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 usage: briefkasten [serve|list|read|seen|search|folders|profiles|send|reply|forward|retry|outbox|archive|delete|hashpw|version]
 
-serve [--stdio] [--config FILE]   MCP server; --stdio serves over stdin/stdout
-                                  instead of HTTP, for hosts that spawn it.
+serve [--stdio] [--config FILE]   MCP server; transport is selected in config
+                                  (http, grpc, or stdio; --stdio is shorthand).
 
 --version (or version) prints the build metadata; add --json for a
 machine-readable form that also reports the toolchain and platform.

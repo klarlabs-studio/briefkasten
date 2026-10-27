@@ -211,9 +211,12 @@ unnotarized downloads.
 
 ### Transports
 
-Briefkasten serves MCP over HTTP by default. Clients that spawn the
-server as a child process — Claude Desktop, Claude Code, and most local
-MCP hosts — want stdio instead:
+Briefkasten serves MCP over stateless Streamable HTTP by default. Set
+`transport: grpc` to serve the library's bidirectional gRPC transport on
+`addr`; `auth.basic` does not
+configure gRPC authentication, so secure exposed deployments at the gRPC
+transport boundary. Clients that spawn the server as a child process —
+Claude Desktop, Claude Code, and most local MCP hosts — want stdio instead:
 
 ```bash
 briefkasten serve --stdio --config /path/to/briefkasten.yaml
@@ -441,7 +444,7 @@ Three layers, 12-factor precedence — **env > config file > defaults**:
 
 ```yaml
 # briefkasten.yaml (or point BRIEFKASTEN_CONFIG elsewhere)
-transport: http          # or stdio; http listens on addr, stdio uses stdin/stdout
+transport: http          # http, grpc, or stdio
 addr: ":8090"
 backend: imap            # or maildir; inferred from imap.addr when omitted
 maildir: ./maildir
@@ -500,12 +503,24 @@ so clients can negotiate before presenting credentials.
 outbox:
   dir: ./outbox             # lifecycle state lives here; enables email.send/reply/forward
   from: nexa@local.example
-  deliver_dir: ./delivery   # DirSender: .eml into delivery/new (local loop)
-  smtp:                     # set addr to deliver over SMTP instead
+  smtp:                     # authenticated SMTP; STARTTLS is the default
     addr: smtp.example.org:587
     username: alice
     password: "..."
+    # implicit_tls: true    # use for implicit TLS, commonly port 465
 ```
+
+`outbox.from` must be the verified sender address accepted by the SMTP
+provider. SMTP uses TLS by default (STARTTLS); use `implicit_tls: true` when
+the provider requires implicit TLS. Do not set `insecure: true` for a real
+mail account. For local testing without SMTP, replace the `smtp` block with
+`deliver_dir: ./delivery`; messages are written as `.eml` files under
+`delivery/new`.
+
+Outbound tools are registered only when `outbox.dir` and `outbox.from` are
+configured. The always-available `email://outbound` resource reports whether
+they are enabled and gives setup guidance when they are not. Restart the
+server after changing the static configuration.
 
 Each message is a statechart: `queued → sending → sent | failed`, with
 `failed → queued` on retry — modeled with
@@ -520,6 +535,19 @@ excluded from every derived reply recipient set — the transport reports
 it, so the reply rules and the `From:` header can never disagree. SMTP delivery is fortify-wrapped (timeout, exponential-backoff retry).
 Env overrides: `BRIEFKASTEN_OUTBOX_DIR` / `_FROM` / `_DELIVER_DIR`,
 `BRIEFKASTEN_SMTP_ADDR` / `_USER` / `_PASSWORD` / `_INSECURE`.
+
+Minimal MCP flow after configuring the outbox:
+
+1. Read `email://outbound` and confirm `enabled` is `true`.
+2. Ask the user to approve sending to the displayed recipient count. Then call
+   `email.send` with `to`, `subject`, and `body`; use the host's confirmation
+   prompt, or pass `confirm: true` only after the user approves.
+3. Poll `email.send_status` with the returned `id` until it reports `sent` or
+   `failed`. A failed message can be retried explicitly with `email.retry`.
+4. To reply, call `email.reply` with the original message `id` and reply `body`.
+   The tool derives Reply-To/From and threading headers; obtain confirmation
+   for the recipient count shown in its prompt, then check the returned id
+   with `email.send_status`.
 
 ### OAuth2 (Gmail, Outlook)
 

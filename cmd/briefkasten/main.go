@@ -185,7 +185,8 @@ func serve(args []string) int {
 		Bool("runtime_config", cfg.RuntimeConfig).
 		Bool("outbox", outbox != nil)
 
-	if transport == briefkasten.TransportStdio {
+	switch transport {
+	case briefkasten.TransportStdio:
 		// Basic auth guards an HTTP endpoint; over stdio the peer is the
 		// process that spawned us, so there is no credential to check.
 		if authMW != nil {
@@ -193,7 +194,14 @@ func serve(args []string) int {
 		}
 		entry.Msg("briefkasten serving on stdio")
 		err = mcp.ServeStdio(ctx, srv)
-	} else {
+	case briefkasten.TransportGRPC:
+		if authMW != nil {
+			log.Error().Msg("auth.basic is HTTP-only; gRPC auth must be configured with TLS or a gRPC interceptor")
+			return 1
+		}
+		entry.Str("addr", cfg.Addr).Bool("auth", false).Msg("briefkasten listening")
+		err = mcp.ServeGRPC(ctx, srv, cfg.Addr)
+	default:
 		entry.Str("addr", cfg.Addr).Bool("auth", authMW != nil).Msg("briefkasten listening")
 		if authMW != nil {
 			err = mcp.ServeHTTPWithMiddleware(ctx, srv, cfg.Addr,

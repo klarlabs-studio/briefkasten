@@ -109,6 +109,14 @@ func TestSendToolsAndOutboxResources(t *testing.T) {
 	mb, _ := newDir(t)
 	svc := application.NewService(mb, nil)
 	client := testutil.NewTestClient(t, New(svc, WithOutbox(ob)))
+	outbound, err := client.ReadResource("email://outbound")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outboundStatus map[string]any
+	if err := json.Unmarshal([]byte(outbound), &outboundStatus); err != nil || outboundStatus["enabled"] != true {
+		t.Fatalf("outbound setup = %v, err = %v", outboundStatus, err)
+	}
 
 	sent := callMap(t, client, "email.send", map[string]any{
 		"to": []string{"x@y.z"}, "subject": "s", "body": "b", "confirm": true,
@@ -140,6 +148,17 @@ func TestSendToolsAndOutboxResources(t *testing.T) {
 
 func TestResourcesPromptsUI(t *testing.T) {
 	client, root := newClient(t)
+	outbound, err := client.ReadResource("email://outbound")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outboundStatus map[string]any
+	if err := json.Unmarshal([]byte(outbound), &outboundStatus); err != nil {
+		t.Fatal(err)
+	}
+	if outboundStatus["enabled"] != false || !strings.Contains(outboundStatus["setup"].(string), "dir: ./outbox") {
+		t.Errorf("outbound setup = %v, want disabled status and setup guidance", outboundStatus)
+	}
 	drop(t, root, "m1.eml", "From: spenden@drk.example\r\nSubject: Spende\r\n\r\nDanke f\u00fcr 85 EUR.")
 
 	text, err := client.ReadResource("email://inbox")

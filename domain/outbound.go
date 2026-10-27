@@ -69,7 +69,23 @@ type OutboundMessage struct {
 // recipient learning it did, which is only true while the address
 // travels in the envelope and nowhere else.
 func (m OutboundMessage) Recipients() []string {
-	return newAddrSet().take(m.To, m.Cc, m.Bcc)
+	seen := make(map[string]struct{}, len(m.To)+len(m.Cc)+len(m.Bcc))
+	var out []string
+	for _, group := range [][]string{m.To, m.Cc, m.Bcc} {
+		for _, value := range group {
+			address, err := mail.ParseAddress(strings.TrimSpace(value))
+			if err != nil {
+				continue // Validate runs before queueing; keep this method total.
+			}
+			key := strings.ToLower(address.Address)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, address.Address)
+		}
+	}
+	return out
 }
 
 // ValidateAddress rejects strings that are not a single RFC 5322 address.

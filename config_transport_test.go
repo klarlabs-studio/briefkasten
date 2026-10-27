@@ -52,7 +52,7 @@ func TestValidateTransportRejectsUnknown(t *testing.T) {
 }
 
 func TestValidateTransportAcceptsKnown(t *testing.T) {
-	for _, tr := range []string{"", briefkasten.TransportHTTP, briefkasten.TransportStdio} {
+	for _, tr := range []string{"", briefkasten.TransportHTTP, briefkasten.TransportStdio, briefkasten.TransportGRPC} {
 		cfg, err := briefkasten.LoadConfig("")
 		if err != nil {
 			t.Fatalf("LoadConfig: %v", err)

@@ -115,8 +115,15 @@ func TestRecipientsDeduplicateAcrossFields(t *testing.T) {
 		Cc:  []string{"A@B.C", "c@d.e"},
 		Bcc: []string{"c@d.e"},
 	}
-	if got := msg.Recipients(); len(got) != 2 {
-		t.Errorf("Recipients() = %v, want alice and c@d.e once each", got)
+	got := msg.Recipients()
+	want := []string{"a@b.c", "c@d.e"}
+	if len(got) != len(want) {
+		t.Fatalf("Recipients() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("Recipients()[%d] = %q, want %q", i, got[i], want[i])
+		}
 	}
 }
 

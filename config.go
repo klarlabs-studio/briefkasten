@@ -21,7 +21,7 @@ type Config struct {
 	// listens on Addr) or "stdio" (JSON-RPC over stdin/stdout, for
 	// clients that spawn the binary as a child process).
 	Transport string `yaml:"transport"`
-	// Addr is the MCP listen address. Ignored when Transport is "stdio".
+	// Addr is the MCP listen address for HTTP or gRPC. Ignored by stdio.
 	Addr string `yaml:"addr"`
 	// Backend selects the mailbox backend: "maildir" or "imap". When empty,
 	// "imap" is inferred if IMAP.Addr is set, "maildir" otherwise.
@@ -345,6 +345,7 @@ func overlay(dst *string, key string) {
 const (
 	TransportHTTP  = "http"
 	TransportStdio = "stdio"
+	TransportGRPC  = "grpc"
 )
 
 // ResolvedTransport returns the effective transport: the explicit
@@ -360,11 +361,11 @@ func (c *Config) ResolvedTransport() string {
 // typo fails at startup rather than silently falling back to HTTP.
 func (c *Config) ValidateTransport() error {
 	switch c.ResolvedTransport() {
-	case TransportHTTP, TransportStdio:
+	case TransportHTTP, TransportStdio, TransportGRPC:
 		return nil
 	default:
-		return fmt.Errorf("config: unknown transport %q (want %q or %q)",
-			c.Transport, TransportHTTP, TransportStdio)
+		return fmt.Errorf("config: unknown transport %q (want %q, %q, or %q)",
+			c.Transport, TransportHTTP, TransportStdio, TransportGRPC)
 	}
 }
 

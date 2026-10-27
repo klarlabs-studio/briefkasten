@@ -32,7 +32,8 @@ with email.mark_seen — only after processing succeeded, so failures stay
 unread for retry. To look back at mail already processed, pass
 scope=read (or scope=all) to email.list and email.search; scope defaults
 to unread, and reading never changes a message's state. Read state cheaply through the email://inbox and
-email://outbox resources. Send mail with email.send, answer it with
+email://outbox resources. Check email://outbound for outbound capability
+and setup; send tools are available when an outbox is configured. Send mail with email.send, answer it with
 email.reply, pass it on with email.forward (all asynchronous: poll
 email.send_status). Curate with email.archive / email.delete — soft
 moves; nothing is ever expunged.

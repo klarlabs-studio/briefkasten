@@ -62,6 +62,8 @@ func TestServeWithBasicAuth(t *testing.T) {
 			t.Fatal(err)
 		}
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("MCP-Protocol-Version", "2025-11-25")
+		req.Header.Set("Mcp-Method", "tools/list")
 		if authorize {
 			req.SetBasicAuth("alice", "s3cret")
 		}
