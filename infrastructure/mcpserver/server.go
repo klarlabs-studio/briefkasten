@@ -73,7 +73,7 @@ more than 25 MiB is refused whole, naming the total and the id count.
 Nothing is ever truncated — a cut-off message would be corrupt mail you
 could not tell apart from real mail. Split the ids and fetch again.
 
-Folders are listed on email://folders and managed with
+Folders are listed with email.folder_list or on email://folders and managed with
 email.folder_create / email.folder_delete. Messages can be filed into
 an existing folder with email.move. Creating is idempotent — an
 existing folder is a success — and the name is resolved into the
@@ -619,6 +619,20 @@ func confirmFolder(ctx context.Context, confirmed bool, action, name string) err
 // content reaches every tool, so the request to make one is as capable of
 // originating in an email body as the request to remove one.
 func registerFolderTools(srv *mcp.Server, svc *application.Service) {
+	type folderListInput struct {
+		Account string `json:"account,omitempty" jsonschema:"description=Named account; defaults to the primary (see email://accounts)"`
+	}
+	srv.Tool("email.folder_list").
+		Description("List all available folders in the selected mailbox account. Read-only; safe to call while planning message moves.").
+		OutputSchema(map[string]any{"folders": []string{"INBOX", "Newsletters"}}).
+		Handler(func(ctx context.Context, in folderListInput) (map[string]any, error) {
+			folders, err := svc.Folders(ctx, in.Account)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"folders": folders}, nil
+		})
+
 	type folderInput struct {
 		Name    string `json:"name" jsonschema:"required,description=Folder name. Resolved into the account's own folder space: on a server whose folders live under INBOX. asking for Work means INBOX.Work"`
 		Account string `json:"account,omitempty" jsonschema:"description=Named account; defaults to the primary (see email://accounts)"`

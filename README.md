@@ -21,6 +21,7 @@ contract instead of binding to IMAP libraries:
 | `email.search` | `{"query", "from?", "scope?", "folder?", "account?", "limit?", "offset?", "include_headers?"}` → IDs and totals; `from` filters by a case-insensitive substring in the parsed From header before pagination; `include_headers=true` adds parsed headers for each message in the selected page; IMAP applies the text query server-side |
 | `email.archive` | `{"id" \| "ids", "confirm?"}` → `{"ok": true}` / `{"archived": [...], "failed": [...], "total": N}` — **human-confirmed** (elicitation or confirm flag); soft: filed to Archive, never destroyed; read or unread |
 | `email.delete` | `{"id" \| "ids", "confirm?"}` → `{"ok": true}` / `{"deleted": [...], "failed": [...], "total": N}` — **human-confirmed**; soft delete to Trash, never expunged; read or unread |
+| `email.folder_list` | `{"account?"}` → `{"folders": [...]}` — read-only list of available folders for the selected account |
 | `email.folder_create` | `{"name", "account?", "confirm?"}` → `{"ok": true, "folder": "Work"}` — **human-confirmed**; idempotent; the name is resolved into the account's folder space (`Work` → `INBOX.Work` on an `INBOX.`-rooted server) |
 | `email.folder_delete` | `{"name", "account?", "confirm?"}` → `{"ok": true, "folder": "Work"}` — **human-confirmed**; **empty folders only**: one holding mail is refused with the count, no force flag; the inbox and the curation destinations are refused outright |
 
@@ -409,8 +410,9 @@ briefkasten folders --create Work        # idempotent; no prompt — nothing mov
 briefkasten folders --delete Work        # prompts y/N; empty folders only
 ```
 
-Over MCP the same two operations are `email.folder_create` and
-`email.folder_delete`, both behind the human gate.
+Over MCP, `email.folder_list` lists the available folders without changing
+mailbox state. `email.folder_create` and `email.folder_delete` are both behind
+the human gate.
 
 **Creating** is namespace-aware and idempotent. `--create Work` on a
 server that roots folders under the inbox makes `INBOX.Work` — the same
