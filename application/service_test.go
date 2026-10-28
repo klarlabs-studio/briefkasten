@@ -52,6 +52,19 @@ type limitedBox struct {
 
 type senderSearchBox struct{ *memBox }
 
+type senderFallbackBox struct{ *memBox }
+
+func (m *senderFallbackBox) SearchScope(context.Context, domain.Scope, string) ([]string, error) {
+	return []string{"sender-match", "other"}, nil
+}
+
+func (m *senderFallbackBox) FetchHeadersMany(_ context.Context, ids []string) (map[string]domain.MessageHeaders, map[string]error) {
+	return map[string]domain.MessageHeaders{
+		"sender-match": {From: "Founder <founder@example.com>"},
+		"other":        {From: "noise@other.test"},
+	}, nil
+}
+
 func (m *senderSearchBox) SearchFromScope(context.Context, domain.Scope, string, string) ([]string, error) {
 	return []string{"sender-match"}, nil
 }
@@ -65,6 +78,18 @@ func TestSearchMessagesFromUsesSenderSearchCapability(t *testing.T) {
 	}
 	if len(page.IDs) != 1 || page.IDs[0] != "sender-match" || page.Total != 1 {
 		t.Fatalf("sender search page = %#v, want sender-match only", page)
+	}
+}
+
+func TestSearchMessagesFromFallbackFiltersHeadersBeforePagination(t *testing.T) {
+	mb := &senderFallbackBox{memBox: newMemBox(map[string]string{"sender-match": "", "other": ""})}
+	svc := application.NewService(mb, nil)
+	page, err := svc.SearchMessagesFrom(t.Context(), "", "", "product", "@example.com", domain.ScopeAll, 0, 10, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.IDs) != 1 || page.IDs[0] != "sender-match" || page.Total != 1 {
+		t.Fatalf("sender fallback page = %#v, want sender-match only", page)
 	}
 }
 
