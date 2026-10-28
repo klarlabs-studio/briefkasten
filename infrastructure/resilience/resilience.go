@@ -479,25 +479,39 @@ func (r *Mailbox) CurationPlan(ctx context.Context) (domain.CurationPlan, error)
 	return v.(domain.CurationPlan), nil
 }
 
+// CurationCapabilities forwards through the resilience pipeline.
+func (r *Mailbox) CurationCapabilities(ctx context.Context) (domain.CurationCapabilities, error) {
+	p, ok := r.mb.(domain.CurationCapabilityProvider)
+	if !ok {
+		return domain.CurationCapabilities{}, errors.New("briefkasten: backend cannot report curation capabilities")
+	}
+	v, err := r.execute(ctx, func(ctx context.Context) (any, error) { return p.CurationCapabilities(ctx) })
+	if err != nil {
+		return domain.CurationCapabilities{}, err
+	}
+	return v.(domain.CurationCapabilities), nil
+}
+
 var (
-	_ domain.Mailbox            = (*Mailbox)(nil)
-	_ domain.CurationInspector  = (*Mailbox)(nil)
-	_ domain.ScopedMailbox      = (*Mailbox)(nil)
-	_ domain.Searcher           = (*Mailbox)(nil)
-	_ domain.ScopedSearcher     = (*Mailbox)(nil)
-	_ domain.HeaderFetcher      = (*Mailbox)(nil)
-	_ domain.BatchHeaderFetcher = (*Mailbox)(nil)
-	_ domain.BulkLimitProvider  = (*Mailbox)(nil)
-	_ domain.BulkLimitSetter    = (*Mailbox)(nil)
-	_ domain.FolderMailbox      = (*Mailbox)(nil)
-	_ domain.FolderManager      = (*Mailbox)(nil)
-	_ domain.Curator            = (*Mailbox)(nil)
-	_ domain.Mover              = (*Mailbox)(nil)
-	_ domain.BulkMailbox        = (*Mailbox)(nil)
-	_ domain.BulkCurator        = (*Mailbox)(nil)
-	_ domain.BulkMover          = (*Mailbox)(nil)
-	_ domain.BulkFetcher        = (*Mailbox)(nil)
-	_ domain.MessageSizer       = (*Mailbox)(nil)
+	_ domain.Mailbox                    = (*Mailbox)(nil)
+	_ domain.CurationInspector          = (*Mailbox)(nil)
+	_ domain.CurationCapabilityProvider = (*Mailbox)(nil)
+	_ domain.ScopedMailbox              = (*Mailbox)(nil)
+	_ domain.Searcher                   = (*Mailbox)(nil)
+	_ domain.ScopedSearcher             = (*Mailbox)(nil)
+	_ domain.HeaderFetcher              = (*Mailbox)(nil)
+	_ domain.BatchHeaderFetcher         = (*Mailbox)(nil)
+	_ domain.BulkLimitProvider          = (*Mailbox)(nil)
+	_ domain.BulkLimitSetter            = (*Mailbox)(nil)
+	_ domain.FolderMailbox              = (*Mailbox)(nil)
+	_ domain.FolderManager              = (*Mailbox)(nil)
+	_ domain.Curator                    = (*Mailbox)(nil)
+	_ domain.Mover                      = (*Mailbox)(nil)
+	_ domain.BulkMailbox                = (*Mailbox)(nil)
+	_ domain.BulkCurator                = (*Mailbox)(nil)
+	_ domain.BulkMover                  = (*Mailbox)(nil)
+	_ domain.BulkFetcher                = (*Mailbox)(nil)
+	_ domain.MessageSizer               = (*Mailbox)(nil)
 )
 
 // listFallback mirrors the application-layer scoped-list fallback for

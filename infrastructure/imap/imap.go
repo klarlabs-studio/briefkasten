@@ -66,9 +66,10 @@ type Mailbox struct {
 	// Mailbox is shared across MCP requests, and callers that find the
 	// cache empty must dial their own connection rather than queue
 	// behind whoever holds it.
-	mu     sync.Mutex
-	idle   *imapclient.Client
-	idleAt time.Time
+	mu       sync.Mutex
+	idle     *imapclient.Client
+	idleAt   time.Time
+	selected string
 }
 
 // BulkLimit returns the configured batch ceiling.
@@ -202,9 +203,37 @@ func (m *Mailbox) withConn(ctx context.Context, fn func(*imapclient.Client) erro
 	}
 	if err := fn(c); err != nil {
 		closeClient(ctx, c)
+		m.mu.Lock()
+		m.selected = ""
+		m.mu.Unlock()
 		return err
 	}
+	m.mu.Lock()
+	selected := m.selected
+	m.mu.Unlock()
+	if selected != "" && !strings.EqualFold(selected, m.cfg.Mailbox) {
+		if _, err := awaitValue(ctx, c, "restore configured mailbox selection", c.Select(m.cfg.Mailbox, nil).Wait, cmdTimeout); err != nil {
+			closeClient(ctx, c)
+			m.mu.Lock()
+			m.selected = ""
+			m.mu.Unlock()
+			return fmt.Errorf("imap: restore configured mailbox %s: %w", m.cfg.Mailbox, err)
+		}
+		m.mu.Lock()
+		m.selected = ""
+		m.mu.Unlock()
+	}
 	m.cache(ctx, c)
+	return nil
+}
+
+func (m *Mailbox) selectFolder(ctx context.Context, c *imapclient.Client, folder string) error {
+	if _, err := awaitValue(ctx, c, "select "+folder, c.Select(folder, nil).Wait, cmdTimeout); err != nil {
+		return fmt.Errorf("imap: select %s: %w", folder, err)
+	}
+	m.mu.Lock()
+	m.selected = folder
+	m.mu.Unlock()
 	return nil
 }
 
@@ -232,6 +261,9 @@ func (m *Mailbox) takeIdle(ctx context.Context) *imapclient.Client {
 	m.mu.Lock()
 	c, since := m.idle, m.idleAt
 	m.idle, m.idleAt = nil, time.Time{}
+	if c == nil || time.Since(since) > idleExpiry {
+		m.selected = ""
+	}
 	m.mu.Unlock()
 
 	if c == nil {
@@ -1048,6 +1080,26 @@ func (m *Mailbox) CurationPlan(ctx context.Context) (domain.CurationPlan, error)
 	return plan, nil
 }
 
+// CurationCapabilities reports the safe move path advertised by the server.
+func (m *Mailbox) CurationCapabilities(ctx context.Context) (domain.CurationCapabilities, error) {
+	var result domain.CurationCapabilities
+	err := m.withConn(ctx, func(c *imapclient.Client) error {
+		result.MoveMode = "unsupported"
+		if c.Caps().Has(imap.CapMove) || c.Caps().Has(imap.CapIMAP4rev2) {
+			result.MoveMode = "uid_move"
+		} else if c.Caps().Has(imap.CapUIDPlus) {
+			result.MoveMode = "uidplus_uid_expunge"
+		}
+		result.SourceRemovedOnMove = result.MoveMode != "unsupported"
+		result.PermanentDelete = false
+		return nil
+	})
+	if err != nil {
+		return domain.CurationCapabilities{}, err
+	}
+	return result, nil
+}
+
 var _ domain.CurationInspector = (*Mailbox)(nil)
 
 // chooseCurationFolder decides where a soft move lands from what the
@@ -1294,11 +1346,10 @@ func folderMessages(ctx context.Context, c *imapclient.Client, full string) (int
 
 var _ domain.FolderManager = (*Mailbox)(nil)
 
-// fileTo copies a message into the resolved folder and marks the
-// original seen. Deliberately not MOVE: MOVE expunges the source, and
-// briefkasten never expunges — the original survives, seen. The UID is
-// all that identifies the message, so already-read mail curates exactly
-// like unread mail.
+// fileTo moves a message into the resolved folder. The UID is all that
+// identifies the message, so already-read mail curates exactly like unread
+// mail. moveUIDSet rejects servers whose only fallback would expunge the
+// whole mailbox.
 func (m *Mailbox) fileTo(ctx context.Context, t curationTarget, id string) error {
 	uid, err := parseUID(id)
 	if err != nil {
@@ -1310,36 +1361,131 @@ func (m *Mailbox) fileTo(ctx context.Context, t curationTarget, id string) error
 			return err
 		}
 
-		// COPY of a UID that is not in the mailbox is a no-op most servers
-		// answer OK to, which would report a soft move that never happened.
-		// Curation reaches read mail, where an id can come from a listing
-		// taken long before the call, so a stale id must fail loudly.
-		found, err := awaitValue(ctx, c, "locate "+id,
-			c.Fetch(imap.UIDSetNum(uid), &imap.FetchOptions{UID: true}).Collect, cmdTimeout)
+		source := namespaceFolder(m.personalPrefix(ctx, c), m.cfg.Mailbox)
+		found, err := awaitValue(ctx, c, "locate "+id, c.Fetch(imap.UIDSetNum(uid), &imap.FetchOptions{UID: true}).Collect, cmdTimeout)
 		if err != nil {
 			return fmt.Errorf("imap: locate %s: %w", id, err)
 		}
 		if len(found) == 0 {
 			return fmt.Errorf("%w: %s", domain.ErrBadID, id)
 		}
-
-		// The destination is resolved, not guessed, so a copy failure here is
-		// a real fault worth surfacing rather than something to paper over by
-		// creating a folder the server did not ask for.
-		if _, err := awaitValue(ctx, c, "copy "+id, c.Copy(imap.UIDSetNum(uid), folder).Wait, cmdTimeout); err != nil {
-			return fmt.Errorf("imap: copy %s to %s: %w", id, folder, err)
-		}
-		if err := await(ctx, c, "mark seen "+id, c.Store(imap.UIDSetNum(uid), &imap.StoreFlags{
-			Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagSeen},
-		}, nil).Close, cmdTimeout); err != nil {
-			return fmt.Errorf("imap: mark seen %s: %w", id, err)
-		}
-		return nil
+		return moveUIDSet(ctx, m, c, source, folder, imap.UIDSetNum(uid))
 	})
 }
 
-// Move files a message into an existing user folder. Like archive and
-// trash, IMAP uses COPY plus Seen and never expunges the source.
+// moveUIDSet uses UID MOVE or go-imap's UIDPLUS-only fallback. The guard is
+// essential: without MOVE or UIDPLUS the library falls back to mailbox-wide
+// EXPUNGE, which could permanently remove unrelated messages.
+func moveUIDSet(ctx context.Context, m *Mailbox, c *imapclient.Client, source, destination string, uids imap.UIDSet) error {
+	nums, ok := uids.Nums()
+	if !ok || len(nums) == 0 {
+		return errors.New("imap: move requires a concrete non-empty UID set")
+	}
+	if strings.EqualFold(source, destination) {
+		found, err := awaitValue(ctx, c, "verify message already in destination", c.Fetch(uids, &imap.FetchOptions{UID: true}).Collect, cmdTimeout)
+		if err != nil {
+			return fmt.Errorf("imap: verify message in destination: %w", err)
+		}
+		if len(found) != len(nums) {
+			return fmt.Errorf("imap: cannot move: source and destination are the same and %d of %d message(s) are present", len(found), len(nums))
+		}
+		return nil
+	}
+	caps := c.Caps()
+	if !caps.Has(imap.CapMove) && !caps.Has(imap.CapIMAP4rev2) && !caps.Has(imap.CapUIDPlus) {
+		return errors.New("imap: safe move unsupported: server lacks MOVE and UIDPLUS")
+	}
+
+	var messageIDs map[imap.UID]string
+	if !caps.Has(imap.CapUIDPlus) && !caps.Has(imap.CapIMAP4rev2) {
+		var err error
+		messageIDs, err = fetchMessageIDs(ctx, c, uids)
+		if err != nil {
+			return err
+		}
+		for _, uid := range nums {
+			if strings.TrimSpace(messageIDs[uid]) == "" {
+				return fmt.Errorf("imap: safe move cannot be verified for UID %d: Message-ID is absent and server has no UIDPLUS mapping", uid)
+			}
+		}
+	}
+
+	what := fmt.Sprintf("move %d UIDs to %s", len(nums), destination)
+	data, err := awaitValue(ctx, c, what, c.Move(uids, destination).Wait, cmdTimeout)
+	if err != nil {
+		return fmt.Errorf("imap: %s: %w", what, err)
+	}
+
+	// UID MOVE is only reported successful when the source UIDs are gone
+	// and the corresponding destination messages are present.
+	remaining, err := awaitValue(ctx, c, "verify move source", c.Fetch(uids, &imap.FetchOptions{UID: true}).Collect, cmdTimeout)
+	if err != nil {
+		return fmt.Errorf("imap: verify moved source: %w", err)
+	}
+	if len(remaining) != 0 {
+		return fmt.Errorf("imap: move to %s left %d source message(s) in place", destination, len(remaining))
+	}
+	if err := m.selectFolder(ctx, c, destination); err != nil {
+		return fmt.Errorf("imap: select move destination: %w", err)
+	}
+	if data != nil && data.DestUIDs != nil {
+		found, err := awaitValue(ctx, c, "verify move destination", c.Fetch(data.DestUIDs, &imap.FetchOptions{UID: true}).Collect, cmdTimeout)
+		if err != nil {
+			return fmt.Errorf("imap: verify move destination: %w", err)
+		}
+		if len(found) != len(nums) {
+			return fmt.Errorf("imap: move destination %s contains %d of %d moved message(s)", destination, len(found), len(nums))
+		}
+	} else {
+		for _, uid := range nums {
+			criteria := &imap.SearchCriteria{Header: []imap.SearchCriteriaHeaderField{{Key: "Message-ID", Value: messageIDs[uid]}}}
+			found, err := awaitValue(ctx, c, "verify move destination Message-ID", c.UIDSearch(criteria, nil).Wait, cmdTimeout)
+			if err != nil {
+				return fmt.Errorf("imap: verify moved UID %d in %s: %w", uid, destination, err)
+			}
+			foundUIDs := found.AllUIDs()
+			if len(foundUIDs) == 0 {
+				return fmt.Errorf("imap: moved UID %d is not present in destination %s", uid, destination)
+			}
+			matched := false
+			for _, foundUID := range foundUIDs {
+				section := &imap.FetchItemBodySection{Peek: true, Specifier: imap.PartSpecifierHeader, HeaderFields: []string{"Message-Id"}}
+				check, err := awaitValue(ctx, c, "verify exact destination Message-ID", c.Fetch(imap.UIDSetNum(foundUID), &imap.FetchOptions{UID: true, BodySection: []*imap.FetchItemBodySection{section}}).Collect, cmdTimeout)
+				if err != nil {
+					return fmt.Errorf("imap: verify exact destination Message-ID: %w", err)
+				}
+				if len(check) > 0 {
+					if raw := check[0].FindBodySection(section); raw != nil && strings.EqualFold(mailheaders.Parse(raw).MessageID, messageIDs[uid]) {
+						matched = true
+						break
+					}
+				}
+			}
+			if !matched {
+				return fmt.Errorf("imap: destination %s did not contain the exact Message-ID for moved UID %d", destination, uid)
+			}
+		}
+	}
+	return nil
+}
+
+func fetchMessageIDs(ctx context.Context, c *imapclient.Client, uids imap.UIDSet) (map[imap.UID]string, error) {
+	section := &imap.FetchItemBodySection{Peek: true, Specifier: imap.PartSpecifierHeader, HeaderFields: []string{"Message-Id"}}
+	msgs, err := awaitValue(ctx, c, "fetch Message-IDs before move", c.Fetch(uids, &imap.FetchOptions{UID: true, BodySection: []*imap.FetchItemBodySection{section}}).Collect, cmdTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("imap: fetch Message-IDs before move: %w", err)
+	}
+	ids := make(map[imap.UID]string, len(msgs))
+	for _, msg := range msgs {
+		if raw := msg.FindBodySection(section); raw != nil {
+			ids[msg.UID] = mailheaders.Parse(raw).MessageID
+		}
+	}
+	return ids, nil
+}
+
+// Move files a message into an existing user folder, removing its source
+// entry only after the destination has been verified.
 func (m *Mailbox) Move(ctx context.Context, id, destination string) error {
 	if err := checkFolderName(destination); err != nil {
 		return err
@@ -1357,17 +1503,8 @@ func (m *Mailbox) Move(ctx context.Context, id, destination string) error {
 		if _, held := findFolder(boxes, full); !held {
 			return fmt.Errorf("%w: destination folder %q does not exist", domain.ErrBadFolder, destination)
 		}
-		found, err := awaitValue(ctx, c, "locate "+id, c.Fetch(imap.UIDSetNum(uid), &imap.FetchOptions{UID: true}).Collect, cmdTimeout)
-		if err != nil {
-			return fmt.Errorf("imap: locate %s: %w", id, err)
-		}
-		if len(found) == 0 {
-			return fmt.Errorf("%w: %s", domain.ErrBadID, id)
-		}
-		if _, err := awaitValue(ctx, c, "copy "+id, c.Copy(imap.UIDSetNum(uid), full).Wait, cmdTimeout); err != nil {
-			return fmt.Errorf("imap: copy %s to %s: %w", id, full, err)
-		}
-		return await(ctx, c, "mark seen "+id, c.Store(imap.UIDSetNum(uid), &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagSeen}}, nil).Close, cmdTimeout)
+		source := namespaceFolder(m.personalPrefix(ctx, c), m.cfg.Mailbox)
+		return moveUIDSet(ctx, m, c, source, full, imap.UIDSetNum(uid))
 	})
 }
 
@@ -1396,10 +1533,20 @@ func (m *Mailbox) MoveMany(ctx context.Context, ids []string, destination string
 		if err != nil || len(present) == 0 {
 			return err
 		}
-		if _, err := awaitValue(ctx, c, fmt.Sprintf("copy %d ids to %s", len(present), full), c.Copy(uidSetOf(present), full).Wait, cmdTimeout); err != nil {
+		source := namespaceFolder(m.personalPrefix(ctx, c), m.cfg.Mailbox)
+		if strings.EqualFold(source, full) {
+			for _, ref := range present {
+				res.Succeed(ref.id)
+			}
+			return nil
+		}
+		if err := moveUIDSet(ctx, m, c, source, full, uidSetOf(present)); err != nil {
 			return err
 		}
-		return storeSeen(ctx, c, &res, present)
+		for _, ref := range present {
+			res.Succeed(ref.id)
+		}
+		return nil
 	})
 	if err != nil {
 		return domain.BulkResult{}, err
@@ -1407,23 +1554,20 @@ func (m *Mailbox) MoveMany(ctx context.Context, ids []string, destination string
 	return res, nil
 }
 
-// fileManyTo is fileTo for a whole batch, and costs what one message
-// costs: the destination is resolved once, the set's existence is
-// checked in one FETCH, and the set is carried by one COPY and one
-// STORE. Fifty single moves are ~250 round trips — enough to meet a
-// provider's rate limit; fifty in one batch are five.
+// fileManyTo is fileTo for a whole batch: it resolves the destination
+// once, checks the set's existence in one FETCH, and performs one safe
+// UID MOVE/UIDPLUS move with source and destination verification.
 //
 // The split between the two ways a batch can fail is deliberate. An id
 // this call can attribute — unparseable, or absent from the mailbox —
 // becomes that id's own failure and leaves the rest of the batch alone.
 // A command that fails outright fails the call: nothing distinguishes
-// which messages a broken COPY did or did not touch, so guessing per id
+// which messages a failed move did or did not touch, so guessing per id
 // would invent a report, and the resilience decorator needs to see a
 // backend fault as a fault rather than as a hundred quiet outcomes.
 //
-// Nothing is undone when a batch partly fails. Soft moves are not
-// reversible by us — "un-copying" by deleting the copy is more dangerous
-// than an honest report of what landed where.
+// Nothing is undone when a batch partly fails. A move cannot safely be
+// rolled back after a server reports an uncertain outcome.
 func (m *Mailbox) fileManyTo(ctx context.Context, t curationTarget, ids []string) (domain.BulkResult, error) {
 	if err := domain.CheckBulkIDsLimit(ids, m.BulkLimit()); err != nil {
 		return domain.BulkResult{}, err
@@ -1448,11 +1592,20 @@ func (m *Mailbox) fileManyTo(ctx context.Context, t curationTarget, ids []string
 			return nil
 		}
 
-		what := fmt.Sprintf("copy %d ids to %s", len(present), folder)
-		if _, err := awaitValue(ctx, c, what, c.Copy(uidSetOf(present), folder).Wait, cmdTimeout); err != nil {
-			return fmt.Errorf("imap: %s: %w", what, err)
+		source := namespaceFolder(m.personalPrefix(ctx, c), m.cfg.Mailbox)
+		if strings.EqualFold(source, folder) {
+			for _, ref := range present {
+				res.Succeed(ref.id)
+			}
+			return nil
 		}
-		return storeSeen(ctx, c, &res, present)
+		if err := moveUIDSet(ctx, m, c, source, folder, uidSetOf(present)); err != nil {
+			return err
+		}
+		for _, ref := range present {
+			res.Succeed(ref.id)
+		}
+		return nil
 	})
 	if err != nil {
 		return domain.BulkResult{}, err
@@ -1478,8 +1631,7 @@ var (
 	_ domain.BulkMover   = (*Mailbox)(nil)
 )
 
-// Archive files the message into the server's archive folder; the
-// original is marked seen, never expunged. The destination is whatever
+// Archive moves the message into the server's archive folder. The destination is whatever
 // the server calls its archive — many advertise \Trash but not
 // \Archive, so this commonly resolves through the namespace path.
 func (m *Mailbox) Archive(ctx context.Context, id string) error {

@@ -4,8 +4,10 @@ import (
 	"errors"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
+	"github.com/emersion/go-imap/v2"
 	"go.klarlabs.de/briefkasten/domain"
 
 	bimap "go.klarlabs.de/briefkasten/infrastructure/imap"
@@ -30,11 +32,9 @@ func failedIDs(res domain.BulkResult) []string {
 	return out
 }
 
-// The whole point of the bulk path is what it costs: one folder
-// resolution, one existence check, one COPY and one STORE, whatever the
-// size of the batch. A result-only assertion would pass just as happily
-// over a loop, which is the implementation this exists to avoid.
-func TestIMAPBulkDeleteIssuesOneCopyAndStore(t *testing.T) {
+// A bulk UIDPLUS move performs one COPY, one STORE, and a UID-scoped
+// EXPUNGE, then verifies source absence and destination presence.
+func TestIMAPBulkDeleteIssuesOneUIDPlusMove(t *testing.T) {
 	const batch = 50
 	addr, ln := startSeededIMAPServer(t, batch)
 	mb := newTestIMAPMailbox(t, addr)
@@ -54,16 +54,44 @@ func TestIMAPBulkDeleteIssuesOneCopyAndStore(t *testing.T) {
 	if n := filedIn(t, addr, "Trash"); n != batch {
 		t.Errorf("Trash holds %d messages, want %d", n, batch)
 	}
+	if n := filedIn(t, addr, "INBOX"); n != 0 {
+		t.Errorf("INBOX holds %d messages after move, want 0", n)
+	}
 
-	for _, cmd := range []string{"UID COPY", "UID STORE", "UID FETCH", "LIST"} {
-		if got := ln.commands.count(cmd); got != 1 {
-			t.Errorf("%s issued %d times for a %d-id batch, want 1", cmd, got, batch)
+	for _, cmd := range []string{"UID COPY", "UID STORE", "UID EXPUNGE", "UID FETCH", "LIST"} {
+		want := 1
+		if cmd == "UID FETCH" {
+			want = 3 // initial existence, post-move source, and destination verification
+		}
+		if got := ln.commands.count(cmd); got != want {
+			t.Errorf("%s issued %d times for a %d-id batch, want %d", cmd, got, batch, want)
 		}
 	}
 }
 
-// The measurement the batching exists for: the same work one message at
-// a time costs a full round of commands per message.
+func TestIMAPMoveRefusesServerWithoutSafeMoveCapability(t *testing.T) {
+	addr, ln := startMessagesIMAPServerCaps(t, imap.CapSet{imap.CapIMAP4rev1: {}}, [][]byte{[]byte(testMessage)}, "Trash")
+	mb := newTestIMAPMailbox(t, addr)
+	ids := unreadIDs(t, mb)
+	ln.commands.reset()
+	if err := mb.Delete(t.Context(), ids[0]); err == nil || !strings.Contains(err.Error(), "lacks MOVE and UIDPLUS") {
+		t.Fatalf("Delete error = %v, want explicit safe-move refusal", err)
+	}
+	if n := filedIn(t, addr, "INBOX"); n != 1 {
+		t.Errorf("INBOX holds %d messages after refused move, want 1", n)
+	}
+	if n := filedIn(t, addr, "Trash"); n != 0 {
+		t.Errorf("Trash holds %d messages after refused move, want 0", n)
+	}
+	if n := ln.commands.count("UID MOVE"); n != 0 {
+		t.Errorf("UID MOVE issued %d times, want 0", n)
+	}
+	if n := ln.commands.count("UID COPY"); n != 0 {
+		t.Errorf("UID COPY issued %d times, want 0", n)
+	}
+}
+
+// Single deletes issue one UIDPLUS move per message.
 func TestIMAPSingleDeleteCostsPerMessage(t *testing.T) {
 	const batch = 50
 	addr, ln := startSeededIMAPServer(t, batch)
@@ -76,7 +104,7 @@ func TestIMAPSingleDeleteCostsPerMessage(t *testing.T) {
 			t.Fatalf("Delete %s: %v", id, err)
 		}
 	}
-	for _, cmd := range []string{"UID COPY", "UID STORE", "UID FETCH", "LIST"} {
+	for _, cmd := range []string{"UID COPY", "UID STORE", "UID EXPUNGE"} {
 		if got := ln.commands.count(cmd); got != batch {
 			t.Errorf("%s issued %d times for %d single deletes, want %d", cmd, got, batch, batch)
 		}

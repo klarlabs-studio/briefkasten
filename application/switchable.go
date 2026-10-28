@@ -241,6 +241,15 @@ func (s *Switchable) CurationPlan(ctx context.Context) (domain.CurationPlan, err
 	return ci.CurationPlan(ctx)
 }
 
+// CurationCapabilities forwards the active backend's safe move capabilities.
+func (s *Switchable) CurationCapabilities(ctx context.Context) (domain.CurationCapabilities, error) {
+	p, ok := s.current().(domain.CurationCapabilityProvider)
+	if !ok {
+		return domain.CurationCapabilities{}, errors.New("briefkasten: backend cannot report curation capabilities")
+	}
+	return p.CurationCapabilities(ctx)
+}
+
 // errNoFolderManagement is the one answer both decorators and the
 // service give for a backend that only lists folders. Shared so the
 // three layers cannot drift into three different phrasings of the same
@@ -248,22 +257,23 @@ func (s *Switchable) CurationPlan(ctx context.Context) (domain.CurationPlan, err
 var errNoFolderManagement = errors.New("briefkasten: backend cannot create or delete folders")
 
 var (
-	_ domain.Mailbox            = (*Switchable)(nil)
-	_ domain.FolderManager      = (*Switchable)(nil)
-	_ domain.ScopedMailbox      = (*Switchable)(nil)
-	_ domain.Searcher           = (*Switchable)(nil)
-	_ domain.ScopedSearcher     = (*Switchable)(nil)
-	_ domain.HeaderFetcher      = (*Switchable)(nil)
-	_ domain.BatchHeaderFetcher = (*Switchable)(nil)
-	_ domain.BulkLimitProvider  = (*Switchable)(nil)
-	_ domain.BulkLimitSetter    = (*Switchable)(nil)
-	_ domain.FolderMailbox      = (*Switchable)(nil)
-	_ domain.Curator            = (*Switchable)(nil)
-	_ domain.Mover              = (*Switchable)(nil)
-	_ domain.CurationInspector  = (*Switchable)(nil)
-	_ domain.BulkMailbox        = (*Switchable)(nil)
-	_ domain.BulkCurator        = (*Switchable)(nil)
-	_ domain.BulkMover          = (*Switchable)(nil)
-	_ domain.BulkFetcher        = (*Switchable)(nil)
-	_ domain.MessageSizer       = (*Switchable)(nil)
+	_ domain.Mailbox                    = (*Switchable)(nil)
+	_ domain.FolderManager              = (*Switchable)(nil)
+	_ domain.ScopedMailbox              = (*Switchable)(nil)
+	_ domain.Searcher                   = (*Switchable)(nil)
+	_ domain.ScopedSearcher             = (*Switchable)(nil)
+	_ domain.HeaderFetcher              = (*Switchable)(nil)
+	_ domain.BatchHeaderFetcher         = (*Switchable)(nil)
+	_ domain.BulkLimitProvider          = (*Switchable)(nil)
+	_ domain.BulkLimitSetter            = (*Switchable)(nil)
+	_ domain.FolderMailbox              = (*Switchable)(nil)
+	_ domain.Curator                    = (*Switchable)(nil)
+	_ domain.Mover                      = (*Switchable)(nil)
+	_ domain.CurationInspector          = (*Switchable)(nil)
+	_ domain.CurationCapabilityProvider = (*Switchable)(nil)
+	_ domain.BulkMailbox                = (*Switchable)(nil)
+	_ domain.BulkCurator                = (*Switchable)(nil)
+	_ domain.BulkMover                  = (*Switchable)(nil)
+	_ domain.BulkFetcher                = (*Switchable)(nil)
+	_ domain.MessageSizer               = (*Switchable)(nil)
 )

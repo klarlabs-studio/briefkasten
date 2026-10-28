@@ -753,6 +753,14 @@ func (d *Mailbox) CurationPlan(ctx context.Context) (domain.CurationPlan, error)
 	}, nil
 }
 
+// CurationCapabilities reports Maildir's atomic filesystem rename semantics.
+func (d *Mailbox) CurationCapabilities(ctx context.Context) (domain.CurationCapabilities, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.CurationCapabilities{}, err
+	}
+	return domain.CurationCapabilities{MoveMode: "filesystem_rename", SourceRemovedOnMove: true}, nil
+}
+
 var (
 	_ domain.Curator           = (*Mailbox)(nil)
 	_ domain.CurationInspector = (*Mailbox)(nil)
