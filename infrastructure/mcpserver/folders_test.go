@@ -58,6 +58,20 @@ func TestFolderToolsAreReflectedInTheResource(t *testing.T) {
 	}
 }
 
+func TestFolderListToolReturnsAvailableFolders(t *testing.T) {
+	client, _ := newClient(t)
+	callMap(t, client, "email.folder_create", map[string]any{"name": "Newsletters", "confirm": true})
+
+	out := callMap(t, client, "email.folder_list", map[string]any{})
+	folders, ok := out["folders"].([]string)
+	if !ok {
+		t.Fatalf("folder_list folders = %#v, want array", out["folders"])
+	}
+	if !slices.Contains(folders, "INBOX") || !slices.Contains(folders, "Newsletters") {
+		t.Errorf("folder_list = %v, want INBOX and Newsletters", folders)
+	}
+}
+
 // Both operations are gated. Message content reaches every tool, so a
 // request to reshape the mailbox is as capable of originating in an
 // email body as a request to delete mail.
@@ -164,7 +178,7 @@ func TestFolderToolDescriptionsStateTheRefusals(t *testing.T) {
 // The instructions are the first thing a model reads, so the folder
 // contract has to be in them too.
 func TestInstructionsCoverFolderManagement(t *testing.T) {
-	for _, want := range []string{"email.folder_create", "email.folder_delete", "EMPTY", "force flag"} {
+	for _, want := range []string{"email.folder_list", "email.folder_create", "email.folder_delete", "EMPTY", "force flag"} {
 		if !strings.Contains(Instructions, want) {
 			t.Errorf("Instructions missing %q", want)
 		}
