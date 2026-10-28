@@ -457,6 +457,19 @@ func (s *Service) CurationPlan(ctx context.Context, account, folder string) (dom
 	return ci.CurationPlan(ctx)
 }
 
+// CurationCapabilities reports the active backend's source-removing move path.
+func (s *Service) CurationCapabilities(ctx context.Context, account, folder string) (domain.CurationCapabilities, error) {
+	box, err := s.Resolve(ctx, account, folder)
+	if err != nil {
+		return domain.CurationCapabilities{}, err
+	}
+	p, ok := box.(domain.CurationCapabilityProvider)
+	if !ok {
+		return domain.CurationCapabilities{}, errors.New("briefkasten: backend cannot report curation capabilities")
+	}
+	return p.CurationCapabilities(ctx)
+}
+
 func (s *Service) curator(ctx context.Context, account, folder string) (domain.Curator, error) {
 	box, err := s.Resolve(ctx, account, folder)
 	if err != nil {

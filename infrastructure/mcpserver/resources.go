@@ -18,10 +18,14 @@ import (
 func registerResources(srv *mcp.Server, svc *application.Service, ob *application.Outbox) {
 	srv.Resource("email://capabilities").
 		Name("Mailbox capabilities").
-		Description("Effective mailbox operation limits and supported search filters.").
+		Description("Effective mailbox operation limits, supported search filters, and safe curation semantics.").
 		MimeType("application/json").
-		Handler(func(_ context.Context, uri string, _ map[string]string) (*server.ResourceContent, error) {
-			return jsonResource(uri, map[string]any{"bulk_limit": svc.BulkLimit(), "search_filters": []string{"from"}})
+		Handler(func(ctx context.Context, uri string, args map[string]string) (*server.ResourceContent, error) {
+			payload := map[string]any{"bulk_limit": svc.BulkLimit(), "search_filters": []string{"from"}}
+			if caps, err := svc.CurationCapabilities(ctx, args["account"], args["folder"]); err == nil {
+				payload["curation"] = caps
+			}
+			return jsonResource(uri, payload)
 		})
 
 	srv.Resource("email://outbound").

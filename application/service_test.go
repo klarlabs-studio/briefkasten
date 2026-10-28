@@ -39,10 +39,16 @@ func (m *memBox) FetchHeadersMany(ctx context.Context, ids []string) (map[string
 	}
 	return got, failures
 }
-func (m *memBox) BulkLimit() int   { return 0 }
+func (m *memBox) BulkLimit() int { return 0 }
+
 func (m *memBox) SetBulkLimit(int) {}
+
 func (m *memBox) CurationPlan(context.Context) (domain.CurationPlan, error) {
 	return domain.CurationPlan{Archive: domain.CurationDestination{Folder: "Archive"}, Trash: domain.CurationDestination{Folder: "Trash"}}, nil
+}
+
+func (m *memBox) CurationCapabilities(context.Context) (domain.CurationCapabilities, error) {
+	return domain.CurationCapabilities{MoveMode: "memory_relocate", SourceRemovedOnMove: true}, nil
 }
 
 type limitedBox struct {
@@ -362,6 +368,9 @@ func TestSwitchableSwapAndForwarding(t *testing.T) {
 	if _, err := sw.CurationPlan(t.Context()); err != nil {
 		t.Errorf("curation plan: %v", err)
 	}
+	if caps, err := sw.CurationCapabilities(t.Context()); err != nil || caps.MoveMode != "memory_relocate" || !caps.SourceRemovedOnMove {
+		t.Errorf("curation capabilities = %+v, err %v", caps, err)
+	}
 	if sw.BulkLimit() != domain.MaxBulkIDs {
 		t.Errorf("default bulk limit = %d", sw.BulkLimit())
 	}
@@ -438,6 +447,9 @@ func TestSwitchableCapabilityErrors(t *testing.T) {
 	}
 	if err := sw.Delete(t.Context(), "a.eml"); err == nil {
 		t.Error("delete on curatorless backend accepted")
+	}
+	if _, err := sw.CurationCapabilities(t.Context()); err == nil {
+		t.Error("capabilities on backend without provider accepted")
 	}
 	if _, err := sw.Fetch(t.Context(), "a.eml"); err != nil {
 		t.Errorf("fetch: %v", err)

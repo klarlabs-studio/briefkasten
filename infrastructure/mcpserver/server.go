@@ -84,8 +84,10 @@ force flag, so move or delete those messages first (each of those is a
 soft move) and then delete the folder. The inbox and the folders
 archive and delete file into are refused outright.
 
-Read email://capabilities for the effective bulk_limit and supported
-email.search header filters. email.search accepts optional from, a
+Read email://capabilities for the effective bulk_limit, supported
+email.search header filters, and backend curation guarantees. IMAP moves
+require UID MOVE or UIDPLUS; a server lacking both is refused rather than
+using mailbox-wide EXPUNGE. email.search accepts optional from, a
 case-insensitive substring of the parsed From header; the filter is
 applied before pagination, and total counts only matching messages.
 
@@ -173,7 +175,7 @@ func registerMoveTool(srv *mcp.Server, svc *application.Service) {
 		Account     string   `json:"account,omitempty" jsonschema:"description=Account; defaults to primary"`
 		Confirm     bool     `json:"confirm,omitempty" jsonschema:"description=Set true only after explicit user approval of this move"`
 	}
-	srv.Tool("email.move").Description(fmt.Sprintf("Move explicitly named messages into an existing folder from email://folders. Ids from read or unread listings work; no listing scope gates a message. Maildir relocates the file. IMAP copies into the destination and marks the source seen, without expunging it. Pass id or ids (up to %d). Requires confirmation; approval states the count, destination, and message ids.", svc.BulkLimit())).Destructive().
+	srv.Tool("email.move").Description(fmt.Sprintf("Move explicitly named messages into an existing folder from email://folders. Ids from read or unread listings work; no listing scope gates a message. The source entry is removed only after the destination is verified. IMAP requires UID MOVE or UIDPLUS and refuses servers lacking both; it never uses mailbox-wide EXPUNGE. Pass id or ids (up to %d). Requires confirmation; approval states the count, destination, and message ids.", svc.BulkLimit())).Destructive().
 		OutputSchema(map[string]any{"moved": []string{"a.eml"}, "failed": []map[string]any{{"id": "b.eml", "error": "reason"}}, "total": 2}).
 		Handler(func(ctx context.Context, in moveInput) (map[string]any, error) {
 			ids, bulk, err := batchIDsLimit(in.ID, in.IDs, svc.BulkLimit())
@@ -582,7 +584,7 @@ func registerCurateTools(srv *mcp.Server, svc *application.Service) {
 		})
 
 	srv.Tool("email.delete").
-		Description(fmt.Sprintf("Move messages, read or unread, to trash (soft delete: never expunged). Pass id for one message, or ids for a batch of up to %d you have already enumerated with email.list/email.search — exactly one of the two. Ids from any scope work; curation is not limited to the unread backlog. Requires human confirmation — the host is asked once for the whole batch via elicitation, or pass confirm=true after asking the user yourself. A batch answers per id: deleted lists what moved, failed names each id that did not and why. Nothing is rolled back, so read failed rather than assuming all-or-nothing.", svc.BulkLimit())).
+		Description(fmt.Sprintf("Move messages, read or unread, to the resolved trash folder. The source entry is removed and the message remains recoverable in that folder; permanent deletion is not performed. IMAP requires UID MOVE or UIDPLUS and refuses servers lacking both; it never uses mailbox-wide EXPUNGE. Pass id for one message, or ids for a batch of up to %d you have already enumerated with email.list/email.search — exactly one of the two. Ids from any scope work; curation is not limited to the unread backlog. Requires human confirmation — the host is asked once for the whole batch via elicitation, or pass confirm=true after asking the user yourself. A batch answers per id: deleted lists what moved, failed names each id that did not and why. Nothing is rolled back, so read failed rather than assuming all-or-nothing.", svc.BulkLimit())).
 		Destructive().
 		OutputSchema(map[string]any{
 			"deleted": []string{"a.eml"},

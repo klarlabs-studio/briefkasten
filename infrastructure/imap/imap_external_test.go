@@ -207,6 +207,10 @@ func startSeededIMAPServer(t *testing.T, messages int, extraMailboxes ...string)
 // startMessagesIMAPServer seeds the exact messages given, so a test can
 // control what the mailbox weighs as well as how much of it there is.
 func startMessagesIMAPServer(t *testing.T, bodies [][]byte, extraMailboxes ...string) (string, *countingListener) {
+	return startMessagesIMAPServerCaps(t, imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapUIDPlus: {}}, bodies, extraMailboxes...)
+}
+
+func startMessagesIMAPServerCaps(t *testing.T, caps imap.CapSet, bodies [][]byte, extraMailboxes ...string) (string, *countingListener) {
 	t.Helper()
 
 	user := imapmemserver.NewUser("alice", "secret")
@@ -228,6 +232,7 @@ func startMessagesIMAPServer(t *testing.T, bodies [][]byte, extraMailboxes ...st
 	mem.AddUser(user)
 
 	srv := imapserver.New(&imapserver.Options{
+		Caps: caps,
 		NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
 			return mem.NewSession(), nil, nil
 		},
@@ -483,6 +488,7 @@ func TestIMAPCapabilities(t *testing.T) {
 	mem := imapmemserver.New()
 	mem.AddUser(user)
 	srv := imapserver.New(&imapserver.Options{
+		Caps: imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapUIDPlus: {}},
 		NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
 			return mem.NewSession(), nil, nil
 		},
@@ -531,7 +537,7 @@ func TestIMAPCapabilities(t *testing.T) {
 		t.Errorf("scoped list: %v", err)
 	}
 
-	// Curation: archive one, delete one — both soft (copy + seen).
+	// Curation: archive one and delete one by moving them to their folders.
 	all, _ := mb.ListUnread(t.Context())
 	if err := mb.Archive(t.Context(), all[0]); err != nil {
 		t.Fatalf("archive: %v", err)
@@ -542,6 +548,9 @@ func TestIMAPCapabilities(t *testing.T) {
 	remaining, _ := mb.ListUnread(t.Context())
 	if len(remaining) != 0 {
 		t.Errorf("unread after curation = %v", remaining)
+	}
+	if n := filedIn(t, ln.Addr().String(), "INBOX"); n != 0 {
+		t.Errorf("INBOX contains %d messages after moves, want 0", n)
 	}
 	folders, _ = mb.Folders(t.Context())
 	have = map[string]bool{}

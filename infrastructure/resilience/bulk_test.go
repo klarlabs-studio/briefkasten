@@ -18,6 +18,10 @@ type bulkMailbox struct {
 	batches []int
 }
 
+func (*bulkMailbox) CurationCapabilities(context.Context) (domain.CurationCapabilities, error) {
+	return domain.CurationCapabilities{MoveMode: "test_move", SourceRemovedOnMove: true}, nil
+}
+
 func (b *bulkMailbox) record(ids []string) domain.BulkResult {
 	b.batches = append(b.batches, len(ids))
 	res := domain.NewBulkResult(len(ids))
@@ -65,6 +69,14 @@ func TestResilientForwardsBulkCapability(t *testing.T) {
 	}
 	if len(mb.archived)+len(mb.deleted) != 0 {
 		t.Errorf("backend saw single-message curation: archived %v deleted %v", mb.archived, mb.deleted)
+	}
+}
+
+func TestResilientForwardsCurationCapabilities(t *testing.T) {
+	r := Wrap(&bulkMailbox{}, Config{InitialDelay: time.Millisecond})
+	caps, err := r.CurationCapabilities(t.Context())
+	if err != nil || caps.MoveMode != "test_move" || !caps.SourceRemovedOnMove {
+		t.Fatalf("CurationCapabilities = %+v, err %v", caps, err)
 	}
 }
 

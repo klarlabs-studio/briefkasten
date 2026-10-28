@@ -345,8 +345,8 @@ func plural(n int, word string) string {
 
 // Curator is an optional Mailbox capability: human curation of the
 // mailbox. Both operations are soft moves — Archive files the message
-// away, Delete moves it to trash. Nothing is ever expunged; data is
-// never destroyed.
+// away, Delete moves it to trash. The source entry is removed only after
+// the destination is verified; the message remains recoverable there.
 //
 // Curation is not restricted to the unread backlog: an id is an id,
 // whatever its read state. Tidying mail that was processed weeks ago is
@@ -367,8 +367,9 @@ type Curator interface {
 // Mover is an optional Mailbox capability: file a message into an
 // existing user-selected folder. The source mailbox is the receiver of
 // the call; destination is resolved by the backend in the account's
-// folder space. A move is a soft curation operation and never expunges
-// or destroys a message.
+// folder space. A move is a soft curation operation: the source entry is
+// removed after the destination is verified, and the message remains
+// recoverable there.
 //
 // Like every id-taking curation operation, Move resolves ids across the
 // whole source mailbox regardless of read state.
@@ -708,6 +709,21 @@ type CurationPlan struct {
 // other query here, it honours its context.
 type CurationInspector interface {
 	CurationPlan(ctx context.Context) (CurationPlan, error)
+}
+
+// CurationCapabilities describes the backend's safe source-removing move path.
+// Permanent deletion is deliberately not exposed by Briefkasten.
+type CurationCapabilities struct {
+	MoveMode            string `json:"move_mode"`
+	PermanentDelete     bool   `json:"permanent_delete"`
+	SourceRemovedOnMove bool   `json:"source_removed_on_move"`
+}
+
+// CurationCapabilityProvider reports which move mechanism the active backend
+// can safely use. Implementations must not advertise a mode that can fall back
+// to mailbox-wide EXPUNGE.
+type CurationCapabilityProvider interface {
+	CurationCapabilities(ctx context.Context) (CurationCapabilities, error)
 }
 
 // MaxScanMessages caps how many messages the search fallback may read in
