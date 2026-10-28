@@ -84,6 +84,11 @@ force flag, so move or delete those messages first (each of those is a
 soft move) and then delete the folder. The inbox and the folders
 archive and delete file into are refused outright.
 
+Read email://capabilities for the effective bulk_limit and supported
+email.search header filters. email.search accepts optional from, a
+case-insensitive substring of the parsed From header; the filter is
+applied before pagination, and total counts only matching messages.
+
 email.send, email.reply, email.forward, email.archive, email.delete,
 email.move, email.folder_create, and email.folder_delete all require human
 confirmation: the host is asked via elicitation, or you must ask the
@@ -302,11 +307,12 @@ func registerTools(srv *mcp.Server, svc *application.Service) {
 		})
 
 	srv.Tool("email.search").
-		Description("Search messages for a text query (case-insensitive). scope selects unread (default), read, or all mail. Optional: folder, account, limit, offset. include_headers=true adds parsed From, To, Subject, Date, and Message-ID fields for each message in the selected page.").
+		Description("Search messages for a text query (case-insensitive), optionally filtered by a case-insensitive sender substring in the From header. Filtering happens before pagination. scope selects unread (default), read, or all mail. Optional: folder, account, limit, offset. include_headers=true adds parsed From, To, Subject, Date, and Message-ID fields for each message in the selected page.").
 		ReadOnly().
 		OutputSchema(map[string]any{"ids": []string{"m1.eml"}, "messages": []map[string]any{{"id": "m1.eml", "from": "", "to": "", "subject": "", "date": "", "message_id": ""}}, "total": 1, "scope": "unread", "offset": 0}).
 		Handler(func(ctx context.Context, in struct {
 			Query          string `json:"query" jsonschema:"required,description=Text to find in messages (case-insensitive)"`
+			From           string `json:"from,omitempty" jsonschema:"description=Optional case-insensitive substring to match in the parsed From header; filtering is applied before pagination"`
 			Scope          string `json:"scope,omitempty" jsonschema:"description=Which messages to search: unread (default), read, or all,enum=unread,enum=read,enum=all"`
 			Folder         string `json:"folder,omitempty" jsonschema:"description=Folder to search; defaults to the inbox"`
 			Account        string `json:"account,omitempty" jsonschema:"description=Named account; defaults to the primary"`
@@ -316,7 +322,7 @@ func registerTools(srv *mcp.Server, svc *application.Service) {
 		},
 		) (map[string]any, error) {
 			limit := in.Limit
-			page, err := svc.SearchMessages(ctx, in.Account, in.Folder, in.Query, domain.Scope(in.Scope), in.Offset, limit, in.IncludeHeaders)
+			page, err := svc.SearchMessagesFrom(ctx, in.Account, in.Folder, in.Query, in.From, domain.Scope(in.Scope), in.Offset, limit, in.IncludeHeaders)
 			if err != nil {
 				return nil, err
 			}

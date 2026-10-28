@@ -16,6 +16,14 @@ import (
 // registerResources exposes mailbox and outbox state as MCP resources —
 // all reads route through the application service.
 func registerResources(srv *mcp.Server, svc *application.Service, ob *application.Outbox) {
+	srv.Resource("email://capabilities").
+		Name("Mailbox capabilities").
+		Description("Effective mailbox operation limits and supported search filters.").
+		MimeType("application/json").
+		Handler(func(_ context.Context, uri string, _ map[string]string) (*server.ResourceContent, error) {
+			return jsonResource(uri, map[string]any{"bulk_limit": svc.BulkLimit(), "search_filters": []string{"from"}})
+		})
+
 	srv.Resource("email://outbound").
 		Name("Outbound mail setup").
 		Description("Whether outbound email tools are enabled and how to configure authenticated TLS delivery.").

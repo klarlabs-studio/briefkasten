@@ -320,6 +320,49 @@ func (r *Mailbox) SearchScope(ctx context.Context, scope domain.Scope, query str
 	return v.([]string), nil
 }
 
+// SearchFromScope forwards sender-filtered search through the resilience pipeline.
+func (r *Mailbox) SearchFromScope(ctx context.Context, scope domain.Scope, query, from string) ([]string, error) {
+	v, err := r.execute(ctx, func(ctx context.Context) (any, error) {
+		if s, ok := r.mb.(domain.SenderSearcher); ok {
+			return s.SearchFromScope(ctx, scope, query, from)
+		}
+		return searchFromFallback(ctx, r.mb, scope, query, from)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.([]string), nil
+}
+
+func searchFromFallback(ctx context.Context, mb domain.Mailbox, scope domain.Scope, query, from string) ([]string, error) {
+	ids, err := searchFallback(ctx, mb, scope, query)
+	if err != nil {
+		return nil, err
+	}
+	fetcher, ok := mb.(domain.BatchHeaderFetcher)
+	if !ok {
+		return nil, errors.New("briefkasten: backend cannot fetch message headers in a batch")
+	}
+	filtered := make([]string, 0)
+	for start := 0; start < len(ids); start += domain.MaxBulkIDs {
+		end := min(start+domain.MaxBulkIDs, len(ids))
+		headers, failures := fetcher.FetchHeadersMany(ctx, ids[start:end])
+		for _, id := range ids[start:end] {
+			if err := failures[id]; err != nil {
+				return nil, err
+			}
+			h, ok := headers[id]
+			if !ok {
+				return nil, errors.New("briefkasten: backend returned no headers for a message")
+			}
+			if strings.Contains(strings.ToLower(h.From), strings.ToLower(strings.TrimSpace(from))) {
+				filtered = append(filtered, id)
+			}
+		}
+	}
+	return filtered, nil
+}
+
 // Folders forwards to the wrapped backend when it supports folders.
 func (r *Mailbox) Folders(ctx context.Context) ([]string, error) {
 	fm, ok := r.mb.(domain.FolderMailbox)

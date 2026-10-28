@@ -41,6 +41,19 @@ func TestDirMailboxSearchNoMatch(t *testing.T) {
 	}
 }
 
+func TestDirMailboxSearchFromScopeFiltersBeforeReturning(t *testing.T) {
+	mb, root := newDir(t)
+	drop(t, root, "a.eml", "From: Founder <founder@example.com>\r\nSubject: Product update\r\n\r\nhello")
+	drop(t, root, "b.eml", "From: noise@other.test\r\nSubject: Product update\r\n\r\nhello")
+	hits, err := mb.SearchFromScope(t.Context(), domain.ScopeAll, "product", "@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0] != "a.eml" {
+		t.Fatalf("SearchFromScope = %v, want [a.eml]", hits)
+	}
+}
+
 func TestDirMailboxFoldersFresh(t *testing.T) {
 	mb, _ := newDir(t)
 

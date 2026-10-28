@@ -142,6 +142,60 @@ func (s *Service) SearchMessages(ctx context.Context, account, folder, query str
 	return s.messagePage(ctx, account, folder, scope, ids, offset, limit, includeHeaders)
 }
 
+// SearchMessagesFrom adds a case-insensitive sender-header filter to a text
+// search. Filtering happens before pagination so Total describes the filtered set.
+func (s *Service) SearchMessagesFrom(ctx context.Context, account, folder, query, from string, scope domain.Scope, offset, limit int, includeHeaders bool) (domain.MessagePage, error) {
+	if strings.TrimSpace(from) == "" {
+		return s.SearchMessages(ctx, account, folder, query, scope, offset, limit, includeHeaders)
+	}
+	box, err := s.Resolve(ctx, account, folder)
+	if err != nil {
+		return domain.MessagePage{}, err
+	}
+	var filtered []string
+	if searcher, ok := box.(domain.SenderSearcher); ok {
+		filtered, err = searcher.SearchFromScope(ctx, scope, query, from)
+	} else {
+		filtered, err = searchFromFallback(ctx, box, scope, query, from)
+	}
+	if err != nil {
+		return domain.MessagePage{}, err
+	}
+	return s.messagePage(ctx, account, folder, scope, filtered, offset, limit, includeHeaders)
+}
+
+func searchFromFallback(ctx context.Context, box domain.Mailbox, scope domain.Scope, query, from string) ([]string, error) {
+	ids, err := searchMailbox(ctx, box, scope, query)
+	if err != nil {
+		return nil, err
+	}
+	fetcher, ok := box.(domain.BatchHeaderFetcher)
+	if !ok {
+		return nil, errors.New("briefkasten: backend cannot fetch message headers in a batch")
+	}
+	filtered := make([]string, 0)
+	for start := 0; start < len(ids); start += domain.MaxBulkIDs {
+		end := start + domain.MaxBulkIDs
+		if end > len(ids) {
+			end = len(ids)
+		}
+		headers, failures := fetcher.FetchHeadersMany(ctx, ids[start:end])
+		for _, id := range ids[start:end] {
+			if err := failures[id]; err != nil {
+				return nil, fmt.Errorf("briefkasten: read headers for %q: %w", id, err)
+			}
+			h, ok := headers[id]
+			if !ok {
+				return nil, fmt.Errorf("briefkasten: no headers returned for %q", id)
+			}
+			if strings.Contains(strings.ToLower(h.From), strings.ToLower(strings.TrimSpace(from))) {
+				filtered = append(filtered, id)
+			}
+		}
+	}
+	return filtered, nil
+}
+
 func (s *Service) messagePage(ctx context.Context, account, folder string, scope domain.Scope, ids []string, offset, limit int, includeHeaders bool) (domain.MessagePage, error) {
 	if offset < 0 || limit < 0 {
 		return domain.MessagePage{}, errors.New("briefkasten: offset and limit must not be negative")

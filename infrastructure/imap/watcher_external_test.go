@@ -37,7 +37,9 @@ func startIMAPServerWithUser(t *testing.T) (string, *imapmemserver.User) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go func() { _ = srv.Serve(ln) }()
+	ready := &readyListener{Listener: ln, ready: make(chan struct{})}
+	go func() { _ = srv.Serve(ready) }()
+	<-ready.ready
 	t.Cleanup(func() { _ = srv.Close() })
 	return ln.Addr().String(), user
 }

@@ -18,7 +18,7 @@ contract instead of binding to IMAP libraries:
 | `email.forward`* | `{"id", "to": [...], "body?", "html_body?", "confirm?"}` → `{"id", "state": "queued"}` — **human-confirmed**; the original is attached whole as `message/rfc822`, so its own attachments survive byte for byte; one over 10 MiB is refused with its measured size |
 | `email.send_status`* | `{"id"}` → `{"state": "queued\|sending\|sent\|failed", "attempts", "error?"}` |
 | `email.retry`* | `{"id"}` → `{"id", "state": "queued"}` — re-queue a failed send |
-| `email.search` | `{"query", "scope?", "folder?", "account?", "limit?", "offset?", "include_headers?"}` → IDs and totals; `include_headers=true` adds parsed headers for each message in the selected page — case-insensitive; IMAP searches server-side |
+| `email.search` | `{"query", "from?", "scope?", "folder?", "account?", "limit?", "offset?", "include_headers?"}` → IDs and totals; `from` filters by a case-insensitive substring in the parsed From header before pagination; `include_headers=true` adds parsed headers for each message in the selected page; IMAP applies the text query server-side |
 | `email.archive` | `{"id" \| "ids", "confirm?"}` → `{"ok": true}` / `{"archived": [...], "failed": [...], "total": N}` — **human-confirmed** (elicitation or confirm flag); soft: filed to Archive, never destroyed; read or unread |
 | `email.delete` | `{"id" \| "ids", "confirm?"}` → `{"ok": true}` / `{"deleted": [...], "failed": [...], "total": N}` — **human-confirmed**; soft delete to Trash, never expunged; read or unread |
 | `email.folder_create` | `{"name", "account?", "confirm?"}` → `{"ok": true, "folder": "Work"}` — **human-confirmed**; idempotent; the name is resolved into the account's folder space (`Work` → `INBOX.Work` on an `INBOX.`-rooted server) |
@@ -29,6 +29,12 @@ Every mailbox tool — `email.list`, `email.list_unread`, `email.fetch`,
 accepts optional `folder` (see `email://folders`) and `account` (see
 `email://accounts`) arguments. `limit` caps the ids returned; `total`
 always reports the full count.
+
+`email.search` also accepts optional `from`, a case-insensitive substring
+matched against the parsed `From` header. This filter is applied before
+`offset` and `limit`, so `total` is the count after both the text query and
+sender filter. For example, `{"query":"product","from":"@example.com","scope":"all"}`
+searches read and unread mail for “product” from that sender domain.
 
 ### Bulk: many ids, one call
 
@@ -174,7 +180,7 @@ Beyond tools, the full MCP surface:
 
 | Surface | What |
 |---|---|
-| Resources | `email://inbox`, `email://inbox/{id}` (raw RFC 5322), `email://inbox/{id}/headers` (parsed from/to/subject/date/message_id — triage without fetching the body), `email://outbox`, `email://outbox/{id}`, `email://folders` (folders plus the curation destinations and how each was decided), `email://accounts` — read state without spending tool calls; `{id}` serves and completes read and unread ids alike |
+| Resources | `email://inbox`, `email://inbox/{id}` (raw RFC 5322), `email://inbox/{id}/headers` (parsed from/to/subject/date/message_id — triage without fetching the body), `email://outbox`, `email://outbox/{id}`, `email://folders` (folders plus the curation destinations and how each was decided), `email://accounts`, `email://capabilities` (effective `bulk_limit` and supported search filters) — read state without spending tool calls; `{id}` serves and completes read and unread ids alike |
 | Prompts | `summarize_inbox(count?)` (embeds up to `count` unread messages, default 20, capped at 100 and clamped rather than refused, each truncated at 16 KiB), `draft_reply(id)` (embeds the original — read or unread — truncated at 16 KiB) |
 | Annotations | read tools are `readOnlyHint`, `mark_seen` is `idempotentHint`, `config.set`, the sending tools and the folder tools are `destructiveHint` |
 | Instructions | the consumption contract (mark seen only after successful processing) ships as server instructions |

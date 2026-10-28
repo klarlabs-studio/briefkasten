@@ -127,6 +127,20 @@ type countingListener struct {
 	conns []net.Conn
 }
 
+type readyListener struct {
+	net.Listener
+	ready chan struct{}
+}
+
+func (l *readyListener) Accept() (net.Conn, error) {
+	select {
+	case <-l.ready:
+	default:
+		close(l.ready)
+	}
+	return l.Listener.Accept()
+}
+
 func (l *countingListener) Accept() (net.Conn, error) {
 	conn, err := l.Listener.Accept()
 	if err != nil {
@@ -224,7 +238,9 @@ func startMessagesIMAPServer(t *testing.T, bodies [][]byte, extraMailboxes ...st
 		t.Fatal(err)
 	}
 	ln := &countingListener{Listener: base, commands: newCommandCounter()}
-	go func() { _ = srv.Serve(ln) }()
+	ready := &readyListener{Listener: ln, ready: make(chan struct{})}
+	go func() { _ = srv.Serve(ready) }()
+	<-ready.ready
 	t.Cleanup(func() { _ = srv.Close() })
 
 	return ln.Addr().String(), ln
@@ -476,7 +492,9 @@ func TestIMAPCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go func() { _ = srv.Serve(ln) }()
+	ready := &readyListener{Listener: ln, ready: make(chan struct{})}
+	go func() { _ = srv.Serve(ready) }()
+	<-ready.ready
 	t.Cleanup(func() { _ = srv.Close() })
 
 	mb, err := bimap.New(bimap.Config{Addr: ln.Addr().String(), Username: "alice", Password: "secret", Insecure: true})

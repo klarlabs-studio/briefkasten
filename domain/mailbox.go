@@ -143,6 +143,12 @@ type ScopedSearcher interface {
 	SearchScope(ctx context.Context, scope Scope, query string) ([]string, error)
 }
 
+// SenderSearcher is an optional search capability that applies a parsed
+// From-header substring filter together with the text query and scope.
+type SenderSearcher interface {
+	SearchFromScope(ctx context.Context, scope Scope, query, from string) ([]string, error)
+}
+
 // FolderMailbox is an optional Mailbox capability: backends with multiple
 // folders list them and hand out folder-scoped instances. Like Mailbox,
 // it honours its context.
