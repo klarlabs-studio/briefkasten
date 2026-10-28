@@ -362,8 +362,19 @@ async function reloadFolders(keep) {
 // mail one confirmation at a time was the thing that made the tools
 // exist. The cap is mirrored here so the refusal arrives before the
 // human is asked to approve a batch that cannot succeed.
-const MAX_BULK = 100;
+let MAX_BULK = 100;
 const picked = new Set();
+
+async function loadCapabilities() {
+  try {
+    const payload = resourceJSON(await rpc('resources/read', { uri: 'email://capabilities' }, READ_TIMEOUT));
+    const limit = Number(payload && payload.bulk_limit);
+    if (Number.isInteger(limit) && limit > 0) MAX_BULK = limit;
+  } catch {
+    // Keep the server-rendered limit if this host cannot read resources.
+  }
+  bulkBar();
+}
 
 function bulkBar() {
   const bar = document.getElementById('bulkBar');
@@ -388,9 +399,11 @@ function bulkBar() {
 // nothing is rolled back, so a partial failure is reported as one rather
 // than being flattened into "it worked" or "it didn't".
 async function bulk(tool, verb) {
+  await loadCapabilities();
   const status = document.getElementById('bulkStatus');
   const ids = [...picked];
   if (!ids.length) return;
+  if (ids.length > MAX_BULK) return;
   status.className = 'status';
   status.textContent = verb + ' ' + ids.length + '…';
   const buttons = document.querySelectorAll('#bulkBar button');
@@ -625,6 +638,7 @@ function searchNote(total) {
 }
 
 async function refresh() {
+  await loadCapabilities();
   const list = document.getElementById('list');
   const status = document.getElementById('status');
   const scope = document.getElementById('scope').value;

@@ -58,7 +58,8 @@ a scope=read or scope=all listing can be fetched, archived, or deleted
 just like an unread one. Curation is not limited to the backlog.
 
 email.fetch, email.mark_seen, email.archive, and email.delete take
-either id (one message) or ids (a batch of up to {{BULK_LIMIT}} you enumerated
+either id (one message) or ids (a batch up to the configured bulk_limit, shown by
+email://capabilities, which you enumerated
 first) — exactly one of the two. There is no "everything matching" form:
 pass the ids you listed. A batch is answered per id —
 fetched/marked/archived/deleted lists what happened, failed names each
@@ -151,7 +152,7 @@ func New(svc *application.Service, serverOpts ...Option) *mcp.Server {
 		// and receive notifications/resources/updated when new mail arrives
 		// (a watcher drives the push; see cmd/briefkasten).
 		Capabilities: mcp.Capabilities{ResourceSubscribe: true},
-	}, mcp.WithInstructions(strings.ReplaceAll(Instructions, "{{BULK_LIMIT}}", fmt.Sprint(svc.BulkLimit()))))
+	}, mcp.WithInstructions(Instructions))
 
 	registerTools(srv, svc)
 	registerCurateTools(srv, svc)
@@ -162,7 +163,7 @@ func New(svc *application.Service, serverOpts ...Option) *mcp.Server {
 	}
 	registerResources(srv, svc, opts.outbox)
 	registerPrompts(srv, svc)
-	registerUI(srv, svc.BulkLimit())
+	registerUI(srv, svc)
 	return srv
 }
 
@@ -175,7 +176,7 @@ func registerMoveTool(srv *mcp.Server, svc *application.Service) {
 		Account     string   `json:"account,omitempty" jsonschema:"description=Account; defaults to primary"`
 		Confirm     bool     `json:"confirm,omitempty" jsonschema:"description=Set true only after explicit user approval of this move"`
 	}
-	srv.Tool("email.move").Description(fmt.Sprintf("Move explicitly named messages into an existing folder from email://folders. Ids from read or unread listings work; no listing scope gates a message. The source entry is removed only after the destination is verified. IMAP requires UID MOVE or UIDPLUS and refuses servers lacking both; it never uses mailbox-wide EXPUNGE. Pass id or ids (up to %d). Requires confirmation; approval states the count, destination, and message ids.", svc.BulkLimit())).Destructive().
+	srv.Tool("email.move").Description("Move explicitly named messages into an existing folder from email://folders. Ids from read or unread listings work; no listing scope gates a message. The source entry is removed only after the destination is verified. IMAP requires UID MOVE or UIDPLUS and refuses servers lacking both; it never uses mailbox-wide EXPUNGE. Pass id or ids up to the configured limit shown by email://capabilities. Requires confirmation; approval states the count, destination, and message ids.").Destructive().
 		OutputSchema(map[string]any{"moved": []string{"a.eml"}, "failed": []map[string]any{{"id": "b.eml", "error": "reason"}}, "total": 2}).
 		Handler(func(ctx context.Context, in moveInput) (map[string]any, error) {
 			ids, bulk, err := batchIDsLimit(in.ID, in.IDs, svc.BulkLimit())
@@ -243,8 +244,8 @@ func registerTools(srv *mcp.Server, svc *application.Service) {
 
 	srv.Tool("email.fetch").
 		Description(fmt.Sprintf(
-			"Fetch raw RFC 5322 messages, base64-encoded. Pass id for one message (returns raw), or ids for a batch of up to %d — exactly one of the two. Works for read and unread messages alike; fetching never marks a message seen. A batch answers per id: fetched carries {id, raw} for each message read, failed names each id that could not be and why. A batch is measured before anything is read and refused whole if the messages total more than %d MiB — retry with fewer ids; nothing is ever truncated.",
-			svc.BulkLimit(), domain.MaxFetchBytes>>20)).
+			"Fetch raw RFC 5322 messages, base64-encoded. Pass id for one message (returns raw), or ids for a batch up to the configured limit shown by email://capabilities — exactly one of the two. Works for read and unread messages alike; fetching never marks a message seen. A batch answers per id: fetched carries {id, raw} for each message read, failed names each id that could not be and why. A batch is measured before anything is read and refused whole if the messages total more than %d MiB — retry with fewer ids; nothing is ever truncated.",
+			domain.MaxFetchBytes>>20)).
 		ReadOnly().
 		OutputSchema(map[string]any{
 			"fetched": []map[string]any{{"id": "a.eml", "raw": "<base64>"}},
@@ -277,7 +278,7 @@ func registerTools(srv *mcp.Server, svc *application.Service) {
 		})
 
 	srv.Tool("email.mark_seen").
-		Description(fmt.Sprintf("Mark messages as seen so they are not ingested again. Pass id for one message, or ids for a batch of up to %d — exactly one of the two. Idempotent: acknowledging a message that is already read succeeds and changes nothing. A batch answers per id: marked lists what was acknowledged, failed names each id that was not and why.", svc.BulkLimit())).
+		Description("Mark messages as seen so they are not ingested again. Pass id for one message, or ids for a batch up to the configured limit shown by email://capabilities — exactly one of the two. Idempotent: acknowledging a message that is already read succeeds and changes nothing. A batch answers per id: marked lists what was acknowledged, failed names each id that was not and why.").
 		Idempotent().
 		OutputSchema(map[string]any{
 			"marked": []string{"a.eml"},
@@ -572,7 +573,7 @@ func registerCurateTools(srv *mcp.Server, svc *application.Service) {
 	}
 
 	srv.Tool("email.archive").
-		Description(fmt.Sprintf("Archive messages, read or unread (soft: filed away, never destroyed). Pass id for one message, or ids for a batch of up to %d you have already enumerated with email.list/email.search — exactly one of the two. Ids from any scope work; curation is not limited to the unread backlog. Requires human confirmation — the host is asked once for the whole batch via elicitation, or pass confirm=true after asking the user yourself. A batch answers per id: archived lists what moved, failed names each id that did not and why. Nothing is rolled back, so read failed rather than assuming all-or-nothing.", svc.BulkLimit())).
+		Description("Archive messages, read or unread (soft: filed away, never destroyed). Pass id for one message, or ids for a batch up to the configured limit shown by email://capabilities that you have already enumerated with email.list/email.search — exactly one of the two. Ids from any scope work; curation is not limited to the unread backlog. Requires human confirmation — the host is asked once for the whole batch via elicitation, or pass confirm=true after asking the user yourself. A batch answers per id: archived lists what moved, failed names each id that did not and why. Nothing is rolled back, so read failed rather than assuming all-or-nothing.").
 		Destructive().
 		OutputSchema(map[string]any{
 			"archived": []string{"a.eml"},
@@ -584,7 +585,7 @@ func registerCurateTools(srv *mcp.Server, svc *application.Service) {
 		})
 
 	srv.Tool("email.delete").
-		Description(fmt.Sprintf("Move messages, read or unread, to the resolved trash folder. The source entry is removed and the message remains recoverable in that folder; permanent deletion is not performed. IMAP requires UID MOVE or UIDPLUS and refuses servers lacking both; it never uses mailbox-wide EXPUNGE. Pass id for one message, or ids for a batch of up to %d you have already enumerated with email.list/email.search — exactly one of the two. Ids from any scope work; curation is not limited to the unread backlog. Requires human confirmation — the host is asked once for the whole batch via elicitation, or pass confirm=true after asking the user yourself. A batch answers per id: deleted lists what moved, failed names each id that did not and why. Nothing is rolled back, so read failed rather than assuming all-or-nothing.", svc.BulkLimit())).
+		Description("Move messages, read or unread, to the resolved trash folder. The source entry is removed and the message remains recoverable in that folder; permanent deletion is not performed. IMAP requires UID MOVE or UIDPLUS and refuses servers lacking both; it never uses mailbox-wide EXPUNGE. Pass id for one message, or ids for a batch up to the configured limit shown by email://capabilities that you have already enumerated with email.list/email.search — exactly one of the two. Ids from any scope work; curation is not limited to the unread backlog. Requires human confirmation — the host is asked once for the whole batch via elicitation, or pass confirm=true after asking the user yourself. A batch answers per id: deleted lists what moved, failed names each id that did not and why. Nothing is rolled back, so read failed rather than assuming all-or-nothing.").
 		Destructive().
 		OutputSchema(map[string]any{
 			"deleted": []string{"a.eml"},

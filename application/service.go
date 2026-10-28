@@ -50,8 +50,17 @@ func (s *Service) SetBulkLimit(limit int) {
 	}
 }
 
-// BulkLimit returns the effective bulk ID cap.
-func (s *Service) BulkLimit() int { return s.bulkLimit }
+// BulkLimit returns the active mailbox's cap when it exposes one. Looking it
+// up on each request lets a switchable backend change its limit atomically at
+// runtime; bulkLimit remains the fallback for mailboxes without that contract.
+func (s *Service) BulkLimit() int {
+	if p, ok := s.mailbox.(domain.BulkLimitProvider); ok {
+		if limit := p.BulkLimit(); limit > 0 {
+			return limit
+		}
+	}
+	return s.bulkLimit
+}
 
 // Resolve routes an optional account and folder to the target mailbox.
 func (s *Service) Resolve(ctx context.Context, account, folder string) (domain.Mailbox, error) {
@@ -247,7 +256,7 @@ func (s *Service) ReadMany(ctx context.Context, account, folder string, ids []st
 	if err != nil {
 		return domain.FetchResult{}, err
 	}
-	return fetchMany(ctx, box, ids, s.bulkLimit)
+	return fetchMany(ctx, box, ids, s.BulkLimit())
 }
 
 // MarkSeen acknowledges a processed message. Idempotent: a message that
@@ -267,7 +276,7 @@ func (s *Service) MarkSeenMany(ctx context.Context, account, folder string, ids 
 	if err != nil {
 		return domain.BulkResult{}, err
 	}
-	return markSeenMany(ctx, box, ids, s.bulkLimit)
+	return markSeenMany(ctx, box, ids, s.BulkLimit())
 }
 
 // Search finds unread messages matching the query. Backends with a
@@ -417,7 +426,7 @@ func (s *Service) MoveMany(
 	if err != nil {
 		return domain.BulkResult{}, err
 	}
-	return moveMany(ctx, box, ids, destination, s.bulkLimit)
+	return moveMany(ctx, box, ids, destination, s.BulkLimit())
 }
 
 // ArchiveMany files a batch of messages away, reporting the outcome per
@@ -428,7 +437,7 @@ func (s *Service) ArchiveMany(ctx context.Context, account, folder string, ids [
 	if err != nil {
 		return domain.BulkResult{}, err
 	}
-	return curateMany(ctx, box, ids, actionArchive, s.bulkLimit)
+	return curateMany(ctx, box, ids, actionArchive, s.BulkLimit())
 }
 
 // DeleteMany moves a batch of messages to trash, reporting the outcome
@@ -439,7 +448,7 @@ func (s *Service) DeleteMany(ctx context.Context, account, folder string, ids []
 	if err != nil {
 		return domain.BulkResult{}, err
 	}
-	return curateMany(ctx, box, ids, actionDelete, s.bulkLimit)
+	return curateMany(ctx, box, ids, actionDelete, s.BulkLimit())
 }
 
 // CurationPlan reports where Archive and Delete would file, without
