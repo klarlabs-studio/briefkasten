@@ -135,6 +135,14 @@ func (s *Switchable) SearchScope(ctx context.Context, scope domain.Scope, query 
 	return searchMailbox(ctx, s.current(), scope, query)
 }
 
+// SearchFromScope forwards sender-filtered searches to the active backend.
+func (s *Switchable) SearchFromScope(ctx context.Context, scope domain.Scope, query, from string) ([]string, error) {
+	if searcher, ok := s.current().(domain.SenderSearcher); ok {
+		return searcher.SearchFromScope(ctx, scope, query, from)
+	}
+	return searchFromFallback(ctx, s.current(), scope, query, from)
+}
+
 // Folders forwards to the backend when it supports folders.
 func (s *Switchable) Folders(ctx context.Context) ([]string, error) {
 	if fm, ok := s.current().(domain.FolderMailbox); ok {

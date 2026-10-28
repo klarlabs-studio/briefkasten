@@ -50,6 +50,24 @@ type limitedBox struct {
 	limit int
 }
 
+type senderSearchBox struct{ *memBox }
+
+func (m *senderSearchBox) SearchFromScope(context.Context, domain.Scope, string, string) ([]string, error) {
+	return []string{"sender-match"}, nil
+}
+
+func TestSearchMessagesFromUsesSenderSearchCapability(t *testing.T) {
+	mb := &senderSearchBox{memBox: newMemBox(map[string]string{"sender-match": "Subject: product\r\n\r\n"})}
+	svc := application.NewService(mb, nil)
+	page, err := svc.SearchMessagesFrom(t.Context(), "", "", "product", "person@example.com", domain.ScopeAll, 0, 10, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.IDs) != 1 || page.IDs[0] != "sender-match" || page.Total != 1 {
+		t.Fatalf("sender search page = %#v, want sender-match only", page)
+	}
+}
+
 func (m *limitedBox) BulkLimit() int         { return m.limit }
 func (m *limitedBox) SetBulkLimit(limit int) { m.limit = limit }
 

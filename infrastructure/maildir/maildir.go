@@ -36,6 +36,8 @@ type Mailbox struct {
 	maxBulkIDs int
 }
 
+var _ domain.SenderSearcher = (*Mailbox)(nil)
+
 // New prepares the directory layout (root/new, root/cur).
 func New(root string) (*Mailbox, error) {
 	return NewWithBulkLimit(root, domain.MaxBulkIDs)
@@ -297,6 +299,25 @@ func (d *Mailbox) SearchScope(ctx context.Context, scope domain.Scope, query str
 			continue
 		}
 		if bytes.Contains(bytes.ToLower(raw), needle) {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+// SearchFromScope searches text and applies a case-insensitive From-header filter.
+func (d *Mailbox) SearchFromScope(ctx context.Context, scope domain.Scope, query, from string) ([]string, error) {
+	ids, err := d.SearchScope(ctx, scope, query)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0)
+	for _, id := range ids {
+		h, err := d.FetchHeaders(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if strings.Contains(strings.ToLower(h.From), strings.ToLower(from)) {
 			out = append(out, id)
 		}
 	}

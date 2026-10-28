@@ -682,9 +682,21 @@ func (m *Mailbox) SearchScope(ctx context.Context, scope domain.Scope, query str
 	return m.uidSearch(ctx, criteria, "search")
 }
 
+// SearchFromScope uses IMAP TEXT and HEADER predicates in one server-side search.
+func (m *Mailbox) SearchFromScope(ctx context.Context, scope domain.Scope, query, from string) ([]string, error) {
+	criteria, err := scopeCriteria(scope)
+	if err != nil {
+		return nil, err
+	}
+	criteria.Text = []string{query}
+	criteria.Header = []imap.SearchCriteriaHeaderField{{Key: "From", Value: from}}
+	return m.uidSearch(ctx, criteria, "search")
+}
+
 var (
 	_ domain.Searcher       = (*Mailbox)(nil)
 	_ domain.ScopedSearcher = (*Mailbox)(nil)
+	_ domain.SenderSearcher = (*Mailbox)(nil)
 )
 
 // Folders lists the server's mailboxes (LIST "" "*").

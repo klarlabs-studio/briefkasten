@@ -98,6 +98,26 @@ func TestIMAPSearchScope(t *testing.T) {
 	}
 }
 
+func TestIMAPSearchFromScope(t *testing.T) {
+	mb := newTestIMAPMailbox(t, startIMAPServer(t))
+
+	hits, err := mb.SearchFromScope(t.Context(), domain.ScopeUnread, "Bescheid", "finanzamt.example")
+	if err != nil {
+		t.Fatalf("SearchFromScope: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("SearchFromScope = %v, want one hit", hits)
+	}
+
+	hits, err = mb.SearchFromScope(t.Context(), domain.ScopeUnread, "Bescheid", "other.example")
+	if err != nil {
+		t.Fatalf("SearchFromScope(non-matching From): %v", err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("SearchFromScope(non-matching From) = %v, want none", hits)
+	}
+}
+
 // Curation over IMAP is UID-based, so a message that is already read
 // archives exactly like an unread one — and lands in Archive.
 func TestIMAPArchiveReadMessage(t *testing.T) {
