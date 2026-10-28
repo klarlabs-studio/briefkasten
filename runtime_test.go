@@ -2,6 +2,7 @@ package briefkasten
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,6 +111,60 @@ func TestConfigSetSwapsBackendAndPersists(t *testing.T) {
 	raw, _ := os.ReadFile(path)
 	if !strings.Contains(string(raw), next) {
 		t.Errorf("config file not persisted:\n%s", raw)
+	}
+}
+
+func TestConfigSetBulkLimitUpdatesLiveToolsAndPersists(t *testing.T) {
+	maildir := newRootDir(t)
+	configPath := filepath.Join(t.TempDir(), "briefkasten.yaml")
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf("maildir: %s\nruntime_config: true\n", maildir)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 101)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("message-%03d.eml", i)
+		dropRoot(t, maildir, ids[i], "From: a@example.com\r\nSubject: Batch test\r\n\r\nbody")
+	}
+	client := newConfigClient(t, cfg)
+
+	updated := rootCallMap(t, client, "config.set", map[string]any{"bulk_limit": 150, "confirm": true})
+	if updated["ok"] != true || updated["persisted"] != true || updated["bulk_limit"] != 150 {
+		t.Fatalf("config.set bulk_limit = %v, want persisted success", updated)
+	}
+	got := rootCallMap(t, client, "config.get", map[string]any{})
+	if got["bulk_limit"] != 150 {
+		t.Fatalf("config.get bulk_limit = %v, want 150", got["bulk_limit"])
+	}
+	resource, err := client.ReadResource("email://capabilities")
+	if err != nil || !strings.Contains(resource, `"bulk_limit":150`) {
+		t.Fatalf("capabilities = %q, err %v; want bulk_limit 150", resource, err)
+	}
+	ui, err := client.ReadResource("ui://briefkasten/inbox")
+	if err != nil || !strings.Contains(ui, "MAX_BULK = 150") {
+		t.Fatalf("inbox UI limit = %q, err %v; want 150", ui, err)
+	}
+	marked := rootCallMap(t, client, "email.mark_seen", map[string]any{"ids": ids})
+	if got := len(marked["marked"].([]string)); got != len(ids) {
+		t.Fatalf("marked %d messages, want %d", got, len(ids))
+	}
+	saved, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.BulkLimit != 150 {
+		t.Fatalf("persisted bulk_limit = %d, want 150", saved.BulkLimit)
+	}
+	reset := rootCallMap(t, client, "config.set", map[string]any{"bulk_limit": 0, "confirm": true})
+	if reset["bulk_limit"] != 100 {
+		t.Fatalf("reset bulk_limit = %v, want default 100", reset["bulk_limit"])
+	}
+	resource, err = client.ReadResource("email://capabilities")
+	if err != nil || !strings.Contains(resource, `"bulk_limit":100`) {
+		t.Fatalf("capabilities after reset = %q, err %v; want default 100", resource, err)
 	}
 }
 

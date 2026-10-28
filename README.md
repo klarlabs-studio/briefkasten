@@ -630,7 +630,7 @@ With `runtime_config: true` two extra tools are served:
 | Tool | Does |
 |---|---|
 | `config.get` | Active configuration and the available profiles — credentials redacted |
-| `config.set` | Switch to a declared `profile`, or apply a partial patch: validates the new backend **and outbound sender**, hot-swaps them, persists to the config file |
+| `config.set` | Switch to a declared `profile`, or apply a partial patch: validates the new backend **and outbound sender**, hot-swaps them, persists to the config file. It can also change `bulk_limit` live. |
 
 #### Profiles — the safe way to switch mailboxes
 
@@ -693,6 +693,20 @@ Patching any `oauth2` field rebuilds the OAuth2 settings from scratch, so a new
 credentials file is re-read and a stale token source is dropped. A failed
 `config.set` leaves the old backend and sender serving — validation happens
 before either swap.
+
+To change the maximum number of message IDs accepted by one bulk operation,
+call `config.set` with the new value:
+
+```jsonc
+{ "bulk_limit": 250, "confirm": true }
+```
+
+The new value takes effect immediately and is persisted when the server started
+from a config file. Set it to `0` to restore the default of 100. Verify the
+effective value with `config.get` or `email://capabilities`; bulk tool limits
+and the inbox UI use that active value. If `runtime_config` is disabled, set
+`bulk_limit` in the config file or `BRIEFKASTEN_BULK_LIMIT` before starting the
+server.
 
 **Guards.** `config.set` requires human confirmation (elicitation, or
 `confirm=true`). Credentials never follow an `addr` change: supply them for the

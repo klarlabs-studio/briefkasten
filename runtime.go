@@ -11,6 +11,8 @@ import (
 
 	mcp "go.klarlabs.de/mcp"
 
+	"go.klarlabs.de/briefkasten/application"
+	"go.klarlabs.de/briefkasten/domain"
 	"go.klarlabs.de/briefkasten/infrastructure/mcpserver"
 )
 
@@ -64,11 +66,12 @@ func NewConfigServer(cfg *Config) (*mcp.Server, *Outbox, error) {
 	}
 
 	sw := NewSwitchable(mb)
-	opts := []ServerOption{WithAccounts(accounts)}
+	svc := application.NewService(sw, accounts)
+	mcpOpts := []mcpserver.Option{}
 	if ob != nil {
-		opts = append(opts, WithOutbox(ob))
+		mcpOpts = append(mcpOpts, mcpserver.WithOutbox(ob))
 	}
-	srv := NewServer(sw, opts...)
+	srv := mcpserver.New(svc, mcpOpts...)
 	if cfg.RuntimeConfig {
 		registerConfigTools(srv, cfg, sw, swSender, accountSw)
 	}
@@ -119,7 +122,7 @@ type smtpPatch struct {
 // repointed. config.set can move where credentials are sent and where
 // mail is read from, which makes it the most consequential tool on the
 // surface — more so than the curation tools that already gate.
-func confirmReconfigure(ctx context.Context, confirmed bool, backend, maildir string, imap *imapPatch) error {
+func confirmReconfigure(ctx context.Context, confirmed bool, backend, maildir string, imap *imapPatch, bulkLimit *int) error {
 	target := "the mailbox configuration"
 	switch {
 	case imap != nil && imap.Addr != "":
@@ -128,10 +131,16 @@ func confirmReconfigure(ctx context.Context, confirmed bool, backend, maildir st
 		target = "the maildir to " + maildir
 	case backend != "":
 		target = "the backend to " + backend
+	case bulkLimit != nil:
+		limit := *bulkLimit
+		if limit == 0 {
+			limit = domain.MaxBulkIDs
+		}
+		target = fmt.Sprintf("the bulk operation limit to %d", limit)
 	}
 	return mcpserver.ConfirmAction(ctx, confirmed,
 		"reconfigure "+target,
-		"Confirm reconfiguring "+target+"? This changes where mail is read from and where credentials are sent.")
+		"Confirm reconfiguring "+target+"? This changes the active mailbox configuration.")
 }
 
 // checkMaildirConfinement keeps a runtime maildir switch inside the
@@ -268,15 +277,16 @@ func registerConfigTools(
 		})
 
 	srv.Tool("config.set").
-		Description("Reconfigure the mailbox and outbound sender at runtime — including OAuth2 credentials (oauth2.credentials_file) for Gmail/Outlook. Partial update: omitted fields keep their current values, EXCEPT credentials when addr changes — those must be supplied for the new endpoint (or cleared with clear_credentials). TLS cannot be disabled at runtime and the maildir stays within the startup one. Requires human confirmation — the host is asked via elicitation, or pass confirm=true after asking the user yourself. The new backend and sender are validated before they replace the old ones; when started from a config file the change is persisted there.").
+		Description("Reconfigure the mailbox and outbound sender at runtime — including the bulk_limit and OAuth2 credentials (oauth2.credentials_file) for Gmail/Outlook. Partial update: omitted fields keep their current values, EXCEPT credentials when addr changes — those must be supplied for the new endpoint (or cleared with clear_credentials). TLS cannot be disabled at runtime and the maildir stays within the startup one. Requires human confirmation — the host is asked via elicitation, or pass confirm=true after asking the user yourself. The new backend and sender are validated before they replace the old ones; when started from a config file the change is persisted there. Read email://capabilities to see the effective bulk_limit.").
 		Destructive().
 		Handler(func(ctx context.Context, in struct {
-			Profile string       `json:"profile,omitempty" jsonschema:"description=Name of a profile declared in the config file (see config.get); applied wholesale and cannot be combined with the field-level patches"`
-			Backend string       `json:"backend,omitempty"`
-			Maildir string       `json:"maildir,omitempty"`
-			IMAP    *imapPatch   `json:"imap,omitempty"`
-			Outbox  *outboxPatch `json:"outbox,omitempty"`
-			Confirm bool         `json:"confirm,omitempty" jsonschema:"description=Set true only after the user explicitly approved reconfiguring the mailbox"`
+			Profile   string       `json:"profile,omitempty" jsonschema:"description=Name of a profile declared in the config file (see config.get); applied wholesale and cannot be combined with the field-level patches"`
+			Backend   string       `json:"backend,omitempty"`
+			Maildir   string       `json:"maildir,omitempty"`
+			BulkLimit *int         `json:"bulk_limit,omitempty" jsonschema:"description=Maximum message IDs accepted by one bulk operation; zero restores the default of 100"`
+			IMAP      *imapPatch   `json:"imap,omitempty"`
+			Outbox    *outboxPatch `json:"outbox,omitempty"`
+			Confirm   bool         `json:"confirm,omitempty" jsonschema:"description=Set true only after the user explicitly approved reconfiguring the mailbox"`
 		},
 		) (map[string]any, error) {
 			if in.Profile != "" {
@@ -285,7 +295,7 @@ func registerConfigTools(
 				}
 				return applyProfile(ctx, in.Profile, in.Confirm, &mu, cfg, sw, swSender, accountSw)
 			}
-			if err := confirmReconfigure(ctx, in.Confirm, in.Backend, in.Maildir, in.IMAP); err != nil {
+			if err := confirmReconfigure(ctx, in.Confirm, in.Backend, in.Maildir, in.IMAP, in.BulkLimit); err != nil {
 				return nil, err
 			}
 			mu.Lock()
@@ -295,6 +305,12 @@ func registerConfigTools(
 			next := *cfg
 			if in.Backend != "" {
 				next.Backend = in.Backend
+			}
+			if in.BulkLimit != nil {
+				if *in.BulkLimit < 0 {
+					return nil, fmt.Errorf("config: bulk_limit must be positive or omitted, got %d", *in.BulkLimit)
+				}
+				next.BulkLimit = *in.BulkLimit
 			}
 			if in.Maildir != "" && in.Maildir != cfg.Maildir {
 				if err := checkMaildirConfinement(startupMaildir, in.Maildir); err != nil {
@@ -419,7 +435,7 @@ func commitConfig(
 		accountSw[name].Swap(box)
 	}
 
-	result := map[string]any{"ok": true, "backend": mdesc}
+	result := map[string]any{"ok": true, "backend": mdesc, "bulk_limit": cfg.effectiveBulkLimit()}
 	if sdesc != "" {
 		result["sender"] = sdesc
 	}
