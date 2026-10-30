@@ -116,6 +116,10 @@
   .msg .pick { margin-right: 0.5rem; }
   .msg.picked { border-left-color: var(--amber); }
   #bulkBar[hidden] { display: none; }
+  #pagination { justify-content: center; }
+  #pageRange { color: var(--ink-soft); font-size: 0.78rem; }
+  .msg .body { margin-top: 0.5rem; }
+  .msg .body[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -156,6 +160,12 @@
     <button id="bulkDelete">Delete</button>
     <button id="bulkClear">Clear</button>
     <span class="status" id="bulkStatus"></span>
+  </div>
+
+  <div class="bar" id="pagination" aria-label="Message pages">
+    <button id="pagePrevious" type="button">Previous</button>
+    <span id="pageRange" aria-live="polite"></span>
+    <button id="pageNext" type="button">Next</button>
   </div>
 
   <div id="list"></div>
@@ -260,11 +270,6 @@ function resourceJSON(result) {
     try { return JSON.parse(entry.text); } catch { return null; }
   }
   return null;
-}
-
-function header(raw, name) {
-  const m = raw.match(new RegExp('^' + name + ':\\s*(.+)$', 'mi'));
-  return m ? m[1].trim() : '';
 }
 
 function addresses(value) {
@@ -619,6 +624,8 @@ function composeButton(mode, id, row) {
 
 // query is the live search term; empty means the plain folder listing.
 let query = '';
+const PAGE_SIZE = 10;
+let pageOffset = 0;
 
 // searchNote states what is on show and offers the way back, since
 // search results and a listing look alike once rendered.
@@ -631,6 +638,7 @@ function searchNote(total) {
   back.textContent = 'Back to listing';
   back.onclick = () => {
     query = '';
+    pageOffset = 0;
     document.getElementById('query').value = '';
     refresh();
   };
@@ -646,10 +654,21 @@ async function refresh() {
   list.innerHTML = '';
   try {
     // Search and list answer in the same shape, so the results replace
-    // the listing in place rather than opening a second surface.
-    const { ids, total } = toolJSON(query
-      ? await callTool('email.search', withFolder({ query, scope }))
-      : await callTool('email.list', withFolder({ scope })));
+    // the listing in place rather than opening a second surface. Ask for
+    // headers and one bounded page; bodies are fetched only when opened.
+    const pageArgs = withFolder({
+      scope, limit: PAGE_SIZE, offset: pageOffset, include_headers: true,
+    });
+    const page = toolJSON(query
+      ? await callTool('email.search', { ...pageArgs, query })
+      : await callTool('email.list', pageArgs));
+    const { ids = [], total = 0, messages = [] } = page;
+    const lastOffset = total === 0 ? 0 : Math.floor((total - 1) / PAGE_SIZE) * PAGE_SIZE;
+    if (pageOffset > lastOffset) {
+      pageOffset = lastOffset;
+      return refresh();
+    }
+    const headers = new Map(messages.map((message) => [message.id, message]));
     // Under scope=all a message's state is not implied by the listing,
     // so ask which ids are still unread rather than guessing.
     let unread = new Set(ids);
@@ -660,6 +679,11 @@ async function refresh() {
     }
     status.textContent = total + ' ' + (scope === 'all' ? 'messages' : scope);
     searchNote(total);
+    const first = ids.length ? pageOffset + 1 : 0;
+    const last = ids.length ? pageOffset + ids.length : 0;
+    document.getElementById('pageRange').textContent = first + '–' + last + ' of ' + total;
+    document.getElementById('pagePrevious').disabled = pageOffset === 0;
+    document.getElementById('pageNext').disabled = pageOffset + ids.length >= total;
     // Drop selections for anything no longer listed: a batch must never
     // act on a message the human can no longer see.
     for (const id of [...picked]) {
@@ -675,16 +699,16 @@ async function refresh() {
       );
       return;
     }
-    for (const id of ids.slice(0, 10)) {
-      const { raw: b64 } = toolJSON(await callTool('email.fetch', withFolder({ id })));
-      const raw = atob(b64);
+    for (const id of ids) {
+      const message = headers.get(id) || {};
       const isUnread = unread.has(id);
       const el = document.createElement('article');
       el.className = isUnread ? 'msg' : 'msg read';
       el.innerHTML =
         '<header><div><div class="subject"><input class="pick" type="checkbox" />' +
         '<span class="badge"></span></div><div class="from"></div></div>' +
-        '<div class="actions"></div></header><pre></pre><div class="composer"></div><p class="error"></p>';
+        '<div class="actions"></div></header><pre class="body" hidden></pre>' +
+        '<div class="composer"></div><p class="error"></p>';
       // Selection survives a re-render only for ids still on show; the
       // set is cleared after every batch, so a stale id cannot ride along
       // into the next one.
@@ -700,10 +724,49 @@ async function refresh() {
       const badge = el.querySelector('.badge');
       badge.className = isUnread ? 'badge unread' : 'badge';
       badge.textContent = isUnread ? 'unread' : 'read';
-      el.querySelector('.subject').append(header(raw, 'Subject') || '(no subject)');
-      el.querySelector('.from').textContent = header(raw, 'From') + ' · ' + id;
-      el.querySelector('pre').textContent = raw.split(/\r?\n\r?\n/).slice(1).join('\n\n').trim();
+      el.querySelector('.subject').append(message.subject || '(no subject)');
+      el.querySelector('.from').textContent =
+        (message.from || 'Unknown sender') + (message.date ? ' · ' + message.date : '') + ' · ' + id;
       const actions = el.querySelector('.actions');
+      const body = el.querySelector('.body');
+      const error = el.querySelector('.error');
+      let bodyLoaded = false;
+      let bodyOpen = false;
+      const showBody = document.createElement('button');
+      showBody.type = 'button';
+      showBody.textContent = 'Show message';
+      showBody.onclick = async () => {
+        if (bodyOpen) {
+          body.hidden = true;
+          bodyOpen = false;
+          showBody.textContent = 'Show message';
+          return;
+        }
+        bodyOpen = true;
+        body.hidden = false;
+        if (bodyLoaded) {
+          showBody.textContent = 'Hide message';
+          return;
+        }
+        showBody.disabled = true;
+        showBody.textContent = 'Loading…';
+        error.textContent = '';
+        try {
+          const { raw: b64 } = toolJSON(await callTool('email.fetch', withFolder({ id })));
+          const raw = atob(b64);
+          body.textContent = raw.split(/\r?\n\r?\n/).slice(1).join('\n\n').trim();
+          bodyLoaded = true;
+          showBody.textContent = 'Hide message';
+        } catch (e) {
+          bodyOpen = false;
+          body.hidden = true;
+          error.textContent = e.message;
+          showBody.textContent = 'Retry loading message';
+        } finally {
+          showBody.disabled = false;
+        }
+      };
+      actions.appendChild(showBody);
       if (isUnread) {
         actions.appendChild(action('Mark seen', 'email.mark_seen', id, el));
       }
@@ -723,15 +786,28 @@ async function refresh() {
 }
 
 document.getElementById('refresh').onclick = refresh;
-document.getElementById('scope').onchange = refresh;
+document.getElementById('scope').onchange = () => {
+  pageOffset = 0;
+  refresh();
+};
 document.getElementById('folder').onchange = () => {
   // A folder change re-runs whatever is on show, search included: the
   // term belongs to the reader, the folder to the mailbox.
+  pageOffset = 0;
   refresh();
 };
 document.getElementById('searchForm').onsubmit = (ev) => {
   ev.preventDefault();
   query = document.getElementById('query').value.trim();
+  pageOffset = 0;
+  refresh();
+};
+document.getElementById('pagePrevious').onclick = () => {
+  pageOffset = Math.max(0, pageOffset - PAGE_SIZE);
+  refresh();
+};
+document.getElementById('pageNext').onclick = () => {
+  pageOffset += PAGE_SIZE;
   refresh();
 };
 document.getElementById('compose').onsubmit = async (ev) => {
