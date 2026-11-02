@@ -47,7 +47,7 @@ jobs:
         with:
           cosign-release: v3.1.2
       - name: Generate dependency SBOM
-        uses: nox-hq/nox@0b56bd883d8db126a4711ae9a5c1eb5c8ac45c4b # v1.54.0
+        uses: nox-hq/nox@62ee1aac6d8d75c4c097b792cc4331dce338f8f5 # v1.55.11
         with:
           path: .
           format: cdx
