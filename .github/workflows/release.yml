@@ -43,11 +43,11 @@ jobs:
       # cosign and nox must exist before goreleaser runs: the `signs:` and
       # `sboms:` blocks in .goreleaser.yaml shell out to them.
       - name: Install cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
         with:
           cosign-release: v3.1.2
       - name: Generate dependency SBOM
-        uses: nox-hq/nox@62ee1aac6d8d75c4c097b792cc4331dce338f8f5 # v1.55.11
+        uses: nox-hq/nox@3623c6f39bd3d8f4290e6f22dfc68d6d5dd5c3ee # v1.62.0
         with:
           path: .
           format: cdx
