@@ -46,16 +46,40 @@ jobs:
         uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
         with:
           cosign-release: v3.1.2
+      # This job can write releases and mint signing certificates, so the nox
+      # binary it runs is checked against a committed sha256 (from nox's
+      # cosign-verified checksums.txt for this version) rather than trusted on
+      # download. Keep NOX_VERSION at the fleet-wide pin.
+      - name: Install nox (sha256-verified)
+        env:
+          NOX_VERSION: "1.63.0"
+          NOX_SHA256: "58c4f348675d2d965e6577bb5d040d387eea82e2d0a4baeb288721f1b0d1b453"
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          curl -fsSL -o "$tmp/nox.tar.gz" \
+            "https://github.com/nox-hq/nox/releases/download/v${NOX_VERSION}/nox_${NOX_VERSION}_linux_amd64.tar.gz"
+          echo "${NOX_SHA256}  $tmp/nox.tar.gz" | sha256sum -c -
+          tar -xzf "$tmp/nox.tar.gz" -C "$tmp" nox
+          mkdir -p "$HOME/.local/bin"
+          install -m 0755 "$tmp/nox" "$HOME/.local/bin/nox"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/nox" version
       - name: Generate dependency SBOM
-        uses: nox-hq/nox@3623c6f39bd3d8f4290e6f22dfc68d6d5dd5c3ee # v1.62.0
-        with:
-          path: .
-          format: cdx
-          output: ${{ runner.temp }}/nox-sbom
-          version: v1.54.0
-          fail-on-findings: 'false'
-          annotate: 'false'
-          offline: 'true'
+        # Same as the nox action did before: install the plugins .nox.yaml
+        # requires, scan offline, and do not gate on findings (exit 1). Any
+        # other exit code is a failed scan.
+        run: |
+          set -euo pipefail
+          nox install --root . --quiet
+          out="$RUNNER_TEMP/nox-sbom"
+          rc=0
+          nox --format cdx --output "$out" -q scan . --offline || rc=$?
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+            echo "::error::nox scan failed with exit code $rc"
+            exit "$rc"
+          fi
+          test -s "$out/sbom.cdx.json"
       # The workflow and release config come from main, while source comes from the selected tag.
       # This keeps retries of older tags aligned with the current SBOM and release tooling.
       - name: Load current GoReleaser config
