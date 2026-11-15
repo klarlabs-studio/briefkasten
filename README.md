@@ -1,5 +1,7 @@
 # briefkasten
 
+[![nox security grade](.github/nox-badge.svg)](https://github.com/klarlabs-studio/briefkasten/security)
+
 **A mailbox as an MCP server.**
 
 Briefkasten (German: *letterbox*) exposes any message store through three
