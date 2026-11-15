@@ -385,6 +385,14 @@
       "file_path": "go.mod",
       "severity": "info",
       "created_at": "2026-07-25T19:23:44.449088Z"
+    },
+    {
+      "fingerprint": "c0f45512a16d9f5dd5cbffc44670b9a3031a19decbba01aae1416cab2eef7589",
+      "rule_id": "REACH-003",
+      "file_path": "go.mod",
+      "severity": "low",
+      "reason": "Reachability could not be determined (govulncheck toolchain mismatch). golang.org/x/crypto GO-2026-5932 concerns openpgp, which this module does not import or link (go list -deps shows none); VULN-001 for it is already info/not impacting.",
+      "created_at": "2026-11-15T10:11:05.035179Z"
     }
   ]
 }
