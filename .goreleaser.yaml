@@ -158,11 +158,14 @@ homebrew_casks:
     license: "MIT"
     # The binary is unsigned, so macOS quarantines it on download and
     # Gatekeeper refuses to run it. Strip the attribute after staging.
+    # install_steps (GoReleaser v2.19+) takes Homebrew's declarative steps DSL;
+    # the raw Ruby `install:` hook is deprecated. on_macos replaces the old
+    # "is xattr available" probe: xattr ships with every macOS.
     hooks:
       post:
-        install: |
-          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/briefkasten"]
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/briefkasten"]
           end
 
 release:
